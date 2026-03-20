@@ -3,7 +3,7 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, AutoTokenizer
+from transformers import BertTokenizer, PreTrainedTokenizerFast
 from torchvision import transforms
 from PIL import Image
 
@@ -97,7 +97,20 @@ class bert_data():
             ),
         ])
 
-        self.clip_tokenizer = AutoTokenizer.from_pretrained(clip_model)
+        tokenizer_file = os.path.join(clip_model, 'tokenizer.json') if os.path.isdir(clip_model) else None
+        if tokenizer_file and os.path.isfile(tokenizer_file):
+            self.clip_tokenizer = PreTrainedTokenizerFast(
+                tokenizer_file=tokenizer_file,
+                bos_token='<|startoftext|>',
+                eos_token='<|endoftext|>',
+                pad_token='<|endoftext|>',
+            )
+        else:
+            try:
+                from transformers import CLIPTokenizer
+                self.clip_tokenizer = CLIPTokenizer.from_pretrained(clip_model)
+            except (ImportError, ValueError):
+                self.clip_tokenizer = PreTrainedTokenizerFast.from_pretrained(clip_model)
 
     def load_data(self, path, shuffle):
         data = []
