@@ -9,7 +9,8 @@ parser.add_argument('--num_workers', type=int, default=4)
 parser.add_argument('--early_stop', type=int, default=10)
 parser.add_argument('--bert_vocab_file', default='./pretrained_model/chinese_roberta_wwm_base_ext_pytorch/vocab.txt')
 parser.add_argument('--root_path', default='../data/')
-parser.add_argument('--bert', default='bert-base-uncased')
+parser.add_argument('--bert', default='/map-vepfs/liniuniu/hesirui/bert-base-uncased',
+                    help='local path to BERT model (e.g. bert-base-uncased)')
 parser.add_argument('--use_cn_clip', action='store_true', default=False,
                     help='use CN-CLIP (Chinese); default uses HuggingFace CLIP (English)')
 parser.add_argument('--clip_model', default='/map-vepfs/liniuniu/hesirui/clip-vit-base-patch16',
