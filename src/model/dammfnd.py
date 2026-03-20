@@ -6,7 +6,7 @@ from transformers import BertModel
 import torch.nn as nn
 import models_mae
 from utils.utils import data2gpu, Averager, metrics, Recorder, clipdata2gpu
-from utils.utils import metricsTrueFalse
+from utils.utils import metricsTrueFalse, metricsMultiClass
 from .layers import *
 from .pivot import *
 from timm.models.vision_transformer import Block
@@ -86,8 +86,9 @@ class DomainAwareTransformer(nn.Module):
 
 
 class DAMMFNDMODEL(torch.nn.Module):
-    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout):
+    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=1):
         super(DAMMFNDMODEL, self).__init__()
+        self.num_classes = num_classes
         self.num_expert = 6
         self.task_num = 2
         # self.domain_num = 9
@@ -220,41 +221,53 @@ class DAMMFNDMODEL(torch.nn.Module):
         self.fusion_attention = TokenAttention(self.unified_dim * 2)
         self.final_attention = TokenAttention(320)
 
-        self.text_classifier = MLP(320, mlp_dims, dropout)
+        if self.num_classes > 1:
+            self.text_classifier = MLP_NC(320, mlp_dims, dropout, num_classes)
+            self.image_classifier = MLP_NC(320, mlp_dims, dropout, num_classes)
+            self.fusion_classifier = MLP_NC(320, mlp_dims, dropout, num_classes)
+            self.max_classifier = MLP_NC(320 * 1, mlp_dims, dropout, num_classes)
+            self.domain_aware_text_classifier = MLP_NC(320 * 1, mlp_dims, dropout, num_classes)
+            self.domain_aware_image_classifier = MLP_NC(320 * 1, mlp_dims, dropout, num_classes)
+            self.domain_aware_fusion_classifier = MLP_NC(320 * 1, mlp_dims, dropout, num_classes)
+            self.domain_aware_total_classifier = MLP_NC(320 * 1, mlp_dims, dropout, num_classes)
+        else:
+            self.text_classifier = MLP(320, mlp_dims, dropout)
+            self.image_classifier = MLP(320, mlp_dims, dropout)
+            self.fusion_classifier = MLP(320, mlp_dims, dropout)
+            self.max_classifier = MLP(320 * 1, mlp_dims, dropout)
+            self.domain_aware_text_classifier = MLP(320 * 1, mlp_dims, dropout)
+            self.domain_aware_image_classifier = MLP(320 * 1, mlp_dims, dropout)
+            self.domain_aware_fusion_classifier = MLP(320 * 1, mlp_dims, dropout)
+            self.domain_aware_total_classifier = MLP(320 * 1, mlp_dims, dropout)
         self.text_classifier_Mu = MLP_Mu(320, mlp_dims, dropout)
-        self.image_classifier = MLP(320, mlp_dims, dropout)
         self.image_classifier_Mu = MLP_Mu(320, mlp_dims, dropout)
-        self.fusion_classifier = MLP(320, mlp_dims, dropout)
         self.fusion_classifier_Mu = MLP_Mu(320, mlp_dims, dropout)
-
-        self.max_classifier = MLP(320 * 1, mlp_dims, dropout)
-
-
-        self.domain_aware_text_classifier = MLP(320 * 1, mlp_dims, dropout)
-        self.domain_aware_image_classifier = MLP(320 * 1, mlp_dims, dropout)
-        self.domain_aware_fusion_classifier = MLP(320 * 1, mlp_dims, dropout)
-
-        self.domain_aware_total_classifier = MLP(320 * 1, mlp_dims, dropout)
 
 
         share_classifier_list = []
-
         for i in range(self.domain_num):
-            share_classifier = MLP(320, mlp_dims, dropout)
+            if self.num_classes > 1:
+                share_classifier = MLP_NC(320, mlp_dims, dropout, num_classes)
+            else:
+                share_classifier = MLP(320, mlp_dims, dropout)
             share_classifier_list.append(share_classifier)
         self.share_classifier_list = nn.ModuleList(share_classifier_list)
 
         dom_classifier_list = []
-
         for i in range(self.domain_num):
-            dom_classifier = MLP(320, mlp_dims, dropout)
+            if self.num_classes > 1:
+                dom_classifier = MLP_NC(320, mlp_dims, dropout, num_classes)
+            else:
+                dom_classifier = MLP(320, mlp_dims, dropout)
             dom_classifier_list.append(dom_classifier)
         self.dom_classifier_list = nn.ModuleList(dom_classifier_list)
 
         final_classifier_list = []
-
         for i in range(self.domain_num):
-            final_classifier = MLP(320, mlp_dims, dropout)
+            if self.num_classes > 1:
+                final_classifier = MLP_NC(320, mlp_dims, dropout, num_classes)
+            else:
+                final_classifier = MLP(320, mlp_dims, dropout)
             final_classifier_list.append(final_classifier)
         self.final_classifier_list = nn.ModuleList(final_classifier_list)
 
@@ -510,20 +523,32 @@ class DAMMFNDMODEL(torch.nn.Module):
         image_domain_features = self.gate_image_prefer(fake_news_feature) * image_domain_features
         fusion_domain_features = self.gate_fusion_prefer(fake_news_feature) * fusion_domain_features
 
-        domain_aware_text_view = torch.sigmoid(self.domain_aware_text_classifier(text_gate_expert_value[0] + text_domain_features).squeeze())
-        domain_aware_image_view = torch.sigmoid(self.domain_aware_image_classifier(image_gate_expert_value[0] + image_domain_features).squeeze())
-        domain_aware_fusion_view = torch.sigmoid(self.domain_aware_fusion_classifier(fusion_gate_expert_value0[0] + fusion_domain_features).squeeze())
+        if self.num_classes > 1:
+            domain_aware_text_view = self.domain_aware_text_classifier(text_gate_expert_value[0] + text_domain_features)
+            domain_aware_image_view = self.domain_aware_image_classifier(image_gate_expert_value[0] + image_domain_features)
+            domain_aware_fusion_view = self.domain_aware_fusion_classifier(fusion_gate_expert_value0[0] + fusion_domain_features)
 
-        # Domain-Enhanced Multi-view Decision Layer 
-        weight_common = self.attention([text_gate_expert_value[0], image_gate_expert_value[0], fusion_gate_expert_value0[0]], multi_label_feature)
+            weight_common = self.attention([text_gate_expert_value[0], image_gate_expert_value[0], fusion_gate_expert_value0[0]], multi_label_feature)
 
-        fake_news_sigmoid = weight_common[:, 0].squeeze() * domain_aware_text_view + \
-                            weight_common[:, 1].squeeze() * domain_aware_image_view + \
-                            weight_common[:, 2].squeeze() * domain_aware_fusion_view 
+            fake_news_logits = weight_common[:, 0].unsqueeze(-1) * domain_aware_text_view + \
+                               weight_common[:, 1].unsqueeze(-1) * domain_aware_image_view + \
+                               weight_common[:, 2].unsqueeze(-1) * domain_aware_fusion_view
 
-        fake_news_sigmoid = torch.clamp(fake_news_sigmoid, min=0.0, max=1.0)
+            return fake_news_logits, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view
+        else:
+            domain_aware_text_view = torch.sigmoid(self.domain_aware_text_classifier(text_gate_expert_value[0] + text_domain_features).squeeze())
+            domain_aware_image_view = torch.sigmoid(self.domain_aware_image_classifier(image_gate_expert_value[0] + image_domain_features).squeeze())
+            domain_aware_fusion_view = torch.sigmoid(self.domain_aware_fusion_classifier(fusion_gate_expert_value0[0] + fusion_domain_features).squeeze())
 
-        return fake_news_sigmoid, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view
+            weight_common = self.attention([text_gate_expert_value[0], image_gate_expert_value[0], fusion_gate_expert_value0[0]], multi_label_feature)
+
+            fake_news_sigmoid = weight_common[:, 0].squeeze() * domain_aware_text_view + \
+                                weight_common[:, 1].squeeze() * domain_aware_image_view + \
+                                weight_common[:, 2].squeeze() * domain_aware_fusion_view 
+
+            fake_news_sigmoid = torch.clamp(fake_news_sigmoid, min=0.0, max=1.0)
+
+            return fake_news_sigmoid, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view
 
 
 
@@ -543,7 +568,8 @@ class Trainer():
                  save_param_dir,
                  loss_weight=[1, 0.006, 0.009, 5e-5],
                  early_stop=5,
-                 epoches=100
+                 epoches=100,
+                 num_classes=1
                  ):
         self.lr = lr
         self.weight_decay = weight_decay
@@ -555,6 +581,7 @@ class Trainer():
         self.category_dict = category_dict
         self.loss_weight = loss_weight
         self.use_cuda = use_cuda
+        self.num_classes = num_classes
 
         self.emb_dim = emb_dim
         self.mlp_dims = mlp_dims
@@ -566,10 +593,15 @@ class Trainer():
             self.save_param_dir = save_param_dir
 
     def train(self):
-        self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout)
+        self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout,
+                                  num_classes=self.num_classes)
         if self.use_cuda:
             self.model = self.model.cuda()
-        loss_fn = torch.nn.BCELoss()
+        if self.num_classes > 1:
+            loss_fn_main = torch.nn.CrossEntropyLoss()
+        else:
+            loss_fn_main = torch.nn.BCELoss()
+        loss_fn_bce = torch.nn.BCELoss()
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.98)
         recorder = Recorder(self.early_stop)
@@ -585,25 +617,35 @@ class Trainer():
 
                 label0, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view = self.model(
                     **batch_data)
-                loss0 = loss_fn(label0, label.float())
 
+                if self.num_classes > 1:
+                    loss0 = loss_fn_main(label0, label.long())
 
-                loss11 = torch.nn.functional.binary_cross_entropy_with_logits(text_multi_domain, labels_domain.float())
-                loss21 = torch.nn.functional.binary_cross_entropy_with_logits(image_multi_domain, labels_domain.float())
-                loss31 = torch.nn.functional.binary_cross_entropy_with_logits(fusion_multi_domain,
-                                                                              labels_domain.float())
+                    loss12_aux = loss_fn_main(domain_aware_text_view, label.long())
+                    loss22_aux = loss_fn_main(domain_aware_image_view, label.long())
+                    loss32_auc = loss_fn_main(domain_aware_fusion_view, label.long())
 
+                    loss_domain = torch.tensor(0.0, device=label.device)
 
-                loss12_aux = loss_fn(domain_aware_text_view.squeeze(), label.float())
-                loss22_aux = loss_fn(domain_aware_image_view.squeeze(), label.float())
-                loss32_auc = loss_fn(domain_aware_fusion_view.squeeze(), label.float())
+                    loss = loss0 + loss_domain + (loss12_aux + loss22_aux + loss32_auc) / 3.0
+                else:
+                    loss0 = loss_fn_bce(label0, label.float())
 
-                uniform_target = torch.ones_like(text_fake_news, dtype=torch.float).cuda() / 9
-                loss12 = F.kl_div(text_fake_news, uniform_target.float())
-                loss22 = F.kl_div(image_fake_news, uniform_target.float())
-                loss32 = F.kl_div(fusion_fake_news, uniform_target.float())
+                    loss11 = torch.nn.functional.binary_cross_entropy_with_logits(text_multi_domain, labels_domain.float())
+                    loss21 = torch.nn.functional.binary_cross_entropy_with_logits(image_multi_domain, labels_domain.float())
+                    loss31 = torch.nn.functional.binary_cross_entropy_with_logits(fusion_multi_domain,
+                                                                                  labels_domain.float())
 
-                loss = loss0 + (loss11 + loss12 + loss21 + loss22 + loss31 + loss32) / 6 + (loss12_aux + loss22_aux + loss32_auc) / 3.0
+                    loss12_aux = loss_fn_bce(domain_aware_text_view.squeeze(), label.float())
+                    loss22_aux = loss_fn_bce(domain_aware_image_view.squeeze(), label.float())
+                    loss32_auc = loss_fn_bce(domain_aware_fusion_view.squeeze(), label.float())
+
+                    uniform_target = torch.ones_like(text_fake_news, dtype=torch.float).cuda() / 9
+                    loss12 = F.kl_div(text_fake_news, uniform_target.float())
+                    loss22 = F.kl_div(image_fake_news, uniform_target.float())
+                    loss32 = F.kl_div(fusion_fake_news, uniform_target.float())
+
+                    loss = loss0 + (loss11 + loss12 + loss21 + loss22 + loss31 + loss32) / 6 + (loss12_aux + loss22_aux + loss32_auc) / 3.0
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -643,8 +685,15 @@ class Trainer():
                 batch_label_pred, _, _, _, _, _, _, _, _, _ = self.model(**batch_data)
 
                 label.extend(batch_label.detach().cpu().numpy().tolist())
-                pred.extend(batch_label_pred.detach().cpu().numpy().tolist())
+                if self.num_classes > 1:
+                    batch_pred_class = torch.argmax(batch_label_pred, dim=-1)
+                    pred.extend(batch_pred_class.detach().cpu().numpy().tolist())
+                else:
+                    pred.extend(batch_label_pred.detach().cpu().numpy().tolist())
                 category.extend(batch_category.detach().cpu().numpy().tolist())
 
-        metric_res = metricsTrueFalse(label, pred, category, self.category_dict)
+        if self.num_classes > 1:
+            metric_res = metricsMultiClass(label, pred, self.num_classes)
+        else:
+            metric_res = metricsTrueFalse(label, pred, category, self.category_dict)
         return metric_res
