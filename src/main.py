@@ -29,8 +29,14 @@ parser.add_argument('--num_classes', type=int, default=6,
                     help='1 for binary (original), 6 for 6-class custom dataset')
 parser.add_argument('--data_dir', default='/map-vepfs/liniuniu/hesirui/datasets',
                     help='directory containing train/val/test jsonl files')
-parser.add_argument('--image_root', default='/map-vepfs/liniuniu/hesirui/datasets/AMG_MEDIA/train_imagesN',
-                    help='root directory for images (where Id.png files are)')
+parser.add_argument('--image_root', default=None,
+                    help='single image root for all splits (overrides per-split roots)')
+parser.add_argument('--train_image_root', default=None,
+                    help='image root for train split')
+parser.add_argument('--val_image_root', default=None,
+                    help='image root for val split')
+parser.add_argument('--test_image_root', default=None,
+                    help='image root for test split')
 parser.add_argument('--train_path', default='/map-vepfs/liniuniu/hesirui/datasets/train.jsonl',
                     help='path to train.jsonl')
 parser.add_argument('--val_path', default='/map-vepfs/liniuniu/hesirui/datasets/val.jsonl',
@@ -95,6 +101,15 @@ config = {
         'use_cn_clip': args.use_cn_clip,
         'clip_model': args.clip_model,
         }
+
+if args.image_root is not None:
+    config['image_root'] = args.image_root
+if args.train_image_root is not None:
+    config['train_image_root'] = args.train_image_root
+if args.val_image_root is not None:
+    config['val_image_root'] = args.val_image_root
+if args.test_image_root is not None:
+    config['test_image_root'] = args.test_image_root
 
 if args.train_path is not None:
     config['train_path'] = args.train_path

@@ -66,7 +66,13 @@ class Run():
             }
         elif config['dataset']=="custom":
             self.data_dir = config.get('data_dir', '/map-vepfs/liniuniu/hesirui/datasets')
-            self.image_root = config.get('image_root', None)
+            _img_base = os.path.join(self.data_dir, 'AMG_MEDIA')
+            self.train_image_root = config.get('train_image_root',
+                                               config.get('image_root', os.path.join(_img_base, 'train_imagesN')))
+            self.val_image_root = config.get('val_image_root',
+                                             config.get('image_root', os.path.join(_img_base, 'val_imagesN')))
+            self.test_image_root = config.get('test_image_root',
+                                              config.get('image_root', os.path.join(_img_base, 'test_imagesN')))
             self.train_path = config.get('train_path', os.path.join(self.data_dir, 'train.jsonl'))
             self.val_path = config.get('val_path', os.path.join(self.data_dir, 'val.jsonl'))
             self.test_path = config.get('test_path', os.path.join(self.data_dir, 'test.jsonl'))
@@ -82,18 +88,16 @@ class Run():
     def get_dataloader(self,dataset):
         if dataset == "custom":
             from utils.custom_dataloader import bert_data as custom_data
-            loader = custom_data(
-                max_len=self.max_len,
-                batch_size=self.batchsize,
-                bert=self.bert,
-                category_dict=self.category_dict,
-                num_workers=self.num_workers,
-                root_dir=self.image_root,
-                clip_model=self.clip_model,
-            )
-            train_loader = loader.load_data(self.train_path, shuffle=True)
-            val_loader = loader.load_data(self.val_path, shuffle=False)
-            test_loader = loader.load_data(self.test_path, shuffle=False)
+            def _make_loader(root_dir):
+                return custom_data(
+                    max_len=self.max_len, batch_size=self.batchsize,
+                    bert=self.bert, category_dict=self.category_dict,
+                    num_workers=self.num_workers, root_dir=root_dir,
+                    clip_model=self.clip_model,
+                )
+            train_loader = _make_loader(self.train_image_root).load_data(self.train_path, shuffle=True)
+            val_loader = _make_loader(self.val_image_root).load_data(self.val_path, shuffle=False)
+            test_loader = _make_loader(self.test_image_root).load_data(self.test_path, shuffle=False)
             return train_loader, val_loader, test_loader
 
         if self.emb_type == 'bert':
