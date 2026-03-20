@@ -1,6 +1,7 @@
 import os
 from utils.clip_dataloader import bert_data as weibo_data
 from utils.weibo21_clip_dataloader import bert_data as weibo21_data
+from utils.custom_dataloader import bert_data as custom_data
 from model.dammfnd import Trainer as SGDOMAINTrainer
 
 class Run():
@@ -28,6 +29,8 @@ class Run():
         self.epoch = config['epoch']
         self.save_param_dir = config['save_param_dir']
         self.dataset = config['dataset']
+        self.num_classes = config.get('num_classes', 1)
+
         if config['dataset']=="weibo":
             self.root_path = '../data/'
 
@@ -45,7 +48,7 @@ class Run():
                 "娱乐": 7,
                 "社会": 8
             }
-        if config['dataset']=="weibo21":
+        elif config['dataset']=="weibo21":
             self.root_path = '../Weibo_21/'
 
             self.train_path = self.root_path + 'train_2_domain.xlsx'#weibo21
@@ -62,8 +65,36 @@ class Run():
                 "文体娱乐": 7,
                 "社会生活": 8
             }
+        elif config['dataset']=="custom":
+            self.data_dir = config.get('data_dir', '/map-vepfs/liniuniu/hesirui/datasets')
+            self.image_root = config.get('image_root', None)
+            self.train_path = config.get('train_path', os.path.join(self.data_dir, 'train.jsonl'))
+            self.val_path = config.get('val_path', os.path.join(self.data_dir, 'val.jsonl'))
+            self.test_path = config.get('test_path', os.path.join(self.data_dir, 'test.jsonl'))
+            self.category_dict = {
+                "real_news": 0,
+                "image_forgery": 1,
+                "entity_inconsistency": 2,
+                "event_inconsistency": 3,
+                "temporal_inconsistency": 4,
+                "invalid_visual": 5,
+            }
 
     def get_dataloader(self,dataset):
+        if dataset == "custom":
+            loader = custom_data(
+                max_len=self.max_len,
+                batch_size=self.batchsize,
+                vocab_file=self.vocab_file,
+                category_dict=self.category_dict,
+                num_workers=self.num_workers,
+                root_dir=self.image_root,
+            )
+            train_loader = loader.load_data(self.train_path, shuffle=True)
+            val_loader = loader.load_data(self.val_path, shuffle=False)
+            test_loader = loader.load_data(self.test_path, shuffle=False)
+            return train_loader, val_loader, test_loader
+
         if self.emb_type == 'bert':
             if dataset =="weibo":
                 loader = weibo_data(max_len=self.max_len, batch_size=self.batchsize, vocab_file=self.vocab_file,
@@ -98,7 +129,8 @@ class Run():
                                    use_cuda=self.use_cuda, lr=self.lr, train_loader=train_loader, dropout=self.dropout,
                                    weight_decay=self.weight_decay, val_loader=val_loader, test_loader=test_loader,
                                    category_dict=self.category_dict, early_stop=self.early_stop, epoches=self.epoch,
-                                   save_param_dir=os.path.join(self.save_param_dir, self.model_name))
+                                   save_param_dir=os.path.join(self.save_param_dir, self.model_name),
+                                   num_classes=self.num_classes)
 
         trainer.train()
 
