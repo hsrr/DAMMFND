@@ -3,7 +3,7 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, CLIPTokenizer, CLIPImageProcessor
+from transformers import BertTokenizer, AutoTokenizer
 from torchvision import transforms
 from PIL import Image
 
@@ -30,7 +30,7 @@ def word2input(texts, bert, max_len):
 class CustomJsonlDataset(Dataset):
     def __init__(self, token_ids, masks, labels, categories, clip_input_ids,
                  clip_attention_mask, image_paths, mae_transform,
-                 clip_image_processor, num_domains=9):
+                 clip_transform, num_domains=9):
         self.token_ids = token_ids
         self.masks = masks
         self.labels = labels
@@ -39,7 +39,7 @@ class CustomJsonlDataset(Dataset):
         self.clip_attention_mask = clip_attention_mask
         self.image_paths = image_paths
         self.mae_transform = mae_transform
-        self.clip_image_processor = clip_image_processor
+        self.clip_transform = clip_transform
         self.num_domains = num_domains
 
         self.multi_category = torch.zeros(len(labels), num_domains)
@@ -55,7 +55,7 @@ class CustomJsonlDataset(Dataset):
             img = Image.new('RGB', (224, 224), (0, 0, 0))
 
         mae_img = self.mae_transform(img)
-        clip_pixel = self.clip_image_processor(images=img, return_tensors='pt')['pixel_values'].squeeze(0)
+        clip_img = self.clip_transform(img)
 
         return (
             self.token_ids[index],
@@ -63,7 +63,7 @@ class CustomJsonlDataset(Dataset):
             self.labels[index],
             self.categories[index],
             mae_img,
-            clip_pixel,
+            clip_img,
             self.clip_input_ids[index],
             self.multi_category[index],
             self.clip_attention_mask[index],
@@ -79,7 +79,6 @@ class bert_data():
         self.bert = bert
         self.category_dict = category_dict
         self.root_dir = root_dir
-        self.clip_model = clip_model
 
         self.mae_transform = transforms.Compose([
             transforms.Resize(256),
@@ -88,8 +87,17 @@ class bert_data():
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-        self.clip_image_processor = CLIPImageProcessor.from_pretrained(clip_model)
-        self.clip_tokenizer = CLIPTokenizer.from_pretrained(clip_model)
+        self.clip_transform = transforms.Compose([
+            transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.48145466, 0.4578275, 0.40821073],
+                std=[0.26862954, 0.26130258, 0.27577711]
+            ),
+        ])
+
+        self.clip_tokenizer = AutoTokenizer.from_pretrained(clip_model)
 
     def load_data(self, path, shuffle):
         data = []
@@ -127,7 +135,7 @@ class bert_data():
             clip_attention_mask=clip_attention_mask,
             image_paths=image_paths,
             mae_transform=self.mae_transform,
-            clip_image_processor=self.clip_image_processor,
+            clip_transform=self.clip_transform,
         )
 
         dataloader = DataLoader(
