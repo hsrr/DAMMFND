@@ -1,22 +1,20 @@
 import json
 import os
-import pickle
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer
 from torchvision import transforms
 from PIL import Image
-import cn_clip.clip as clip
-from cn_clip.clip import load_from_name
+import clip
 
 
 def _init_fn(worker_id):
     np.random.seed(2024)
 
 
-def word2input(texts, vocab_file, max_len):
-    tokenizer = BertTokenizer(vocab_file=vocab_file)
+def word2input(texts, bert, max_len):
+    tokenizer = BertTokenizer.from_pretrained(bert)
     token_ids = []
     for text in texts:
         token_ids.append(
@@ -71,12 +69,12 @@ class CustomJsonlDataset(Dataset):
 
 
 class bert_data():
-    def __init__(self, max_len, batch_size, vocab_file, category_dict,
+    def __init__(self, max_len, batch_size, bert, category_dict,
                  num_workers=2, root_dir=None):
         self.max_len = max_len
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.vocab_file = vocab_file
+        self.bert = bert
         self.category_dict = category_dict
         self.root_dir = root_dir
 
@@ -87,8 +85,7 @@ class bert_data():
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-        device = "cpu"
-        _, self.clip_preprocess = load_from_name("ViT-B-16", device=device, download_root='./')
+        _, self.clip_preprocess = clip.load("ViT-B/16", device="cpu")
 
     def load_data(self, path, shuffle):
         data = []
@@ -108,8 +105,8 @@ class bert_data():
             data_dir = os.path.dirname(path)
             image_paths = [os.path.join(data_dir, item['Id'] + ".png") for item in data]
 
-        token_ids, masks = word2input(contents, self.vocab_file, self.max_len)
-        clip_texts = clip.tokenize(contents)
+        token_ids, masks = word2input(contents, self.bert, self.max_len)
+        clip_texts = clip.tokenize(contents, truncate=True)
 
         dataset = CustomJsonlDataset(
             token_ids=token_ids,

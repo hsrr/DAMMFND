@@ -9,7 +9,9 @@ parser.add_argument('--num_workers', type=int, default=4)
 parser.add_argument('--early_stop', type=int, default=10)
 parser.add_argument('--bert_vocab_file', default='./pretrained_model/chinese_roberta_wwm_base_ext_pytorch/vocab.txt')
 parser.add_argument('--root_path', default='../data/')
-parser.add_argument('--bert', default='./pretrained_model/chinese_roberta_wwm_base_ext_pytorch')
+parser.add_argument('--bert', default='bert-base-uncased')
+parser.add_argument('--use_cn_clip', action='store_true', default=False,
+                    help='use CN-CLIP (Chinese); default uses OpenAI CLIP (English)')
 parser.add_argument('--batchsize', type=int, default=64)
 parser.add_argument('--seed', type=int, default=3074)
 parser.add_argument('--gpu', default='0')
@@ -87,6 +89,7 @@ config = {
         'num_classes': args.num_classes,
         'data_dir': args.data_dir,
         'image_root': args.image_root,
+        'use_cn_clip': args.use_cn_clip,
         }
 
 if args.train_path is not None:

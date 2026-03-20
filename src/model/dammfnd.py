@@ -10,8 +10,15 @@ from utils.utils import metricsTrueFalse, metricsMultiClass
 from .layers import *
 from .pivot import *
 from timm.models.vision_transformer import Block
-import cn_clip.clip as clip
-from cn_clip.clip import load_from_name, available_models
+try:
+    import cn_clip.clip as cn_clip_module
+    from cn_clip.clip import load_from_name, available_models
+except ImportError:
+    cn_clip_module = None
+try:
+    import clip as openai_clip_module
+except ImportError:
+    openai_clip_module = None
 
 
 
@@ -86,9 +93,10 @@ class DomainAwareTransformer(nn.Module):
 
 
 class DAMMFNDMODEL(torch.nn.Module):
-    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=1):
+    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=1, use_cn_clip=True):
         super(DAMMFNDMODEL, self).__init__()
         self.num_classes = num_classes
+        self.use_cn_clip = use_cn_clip
         self.num_expert = 6
         self.task_num = 2
         # self.domain_num = 9
@@ -290,7 +298,10 @@ class DAMMFNDMODEL(torch.nn.Module):
             param.requires_grad = False
 
 
-        self.ClipModel, _ = load_from_name("ViT-B-16", device="cuda", download_root='./')
+        if self.use_cn_clip:
+            self.ClipModel, _ = load_from_name("ViT-B-16", device="cuda", download_root='./')
+        else:
+            self.ClipModel, _ = openai_clip_module.load("ViT-B/16", device="cuda")
 
         self.fake_news_layernorm = LayerNorm(320 * 3, eps=1e-12)
         self.domain_classification_layernorm = LayerNorm(320 * 1, eps=1e-12)
@@ -569,7 +580,8 @@ class Trainer():
                  loss_weight=[1, 0.006, 0.009, 5e-5],
                  early_stop=5,
                  epoches=100,
-                 num_classes=1
+                 num_classes=1,
+                 use_cn_clip=True
                  ):
         self.lr = lr
         self.weight_decay = weight_decay
@@ -582,6 +594,7 @@ class Trainer():
         self.loss_weight = loss_weight
         self.use_cuda = use_cuda
         self.num_classes = num_classes
+        self.use_cn_clip = use_cn_clip
 
         self.emb_dim = emb_dim
         self.mlp_dims = mlp_dims
@@ -594,7 +607,7 @@ class Trainer():
 
     def train(self):
         self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout,
-                                  num_classes=self.num_classes)
+                                  num_classes=self.num_classes, use_cn_clip=self.use_cn_clip)
         if self.use_cuda:
             self.model = self.model.cuda()
         if self.num_classes > 1:

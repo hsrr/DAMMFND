@@ -30,6 +30,7 @@ class Run():
         self.save_param_dir = config['save_param_dir']
         self.dataset = config['dataset']
         self.num_classes = config.get('num_classes', 1)
+        self.use_cn_clip = config.get('use_cn_clip', True)
 
         if config['dataset']=="weibo":
             self.root_path = '../data/'
@@ -85,7 +86,7 @@ class Run():
             loader = custom_data(
                 max_len=self.max_len,
                 batch_size=self.batchsize,
-                vocab_file=self.vocab_file,
+                bert=self.bert,
                 category_dict=self.category_dict,
                 num_workers=self.num_workers,
                 root_dir=self.image_root,
@@ -130,7 +131,8 @@ class Run():
                                    weight_decay=self.weight_decay, val_loader=val_loader, test_loader=test_loader,
                                    category_dict=self.category_dict, early_stop=self.early_stop, epoches=self.epoch,
                                    save_param_dir=os.path.join(self.save_param_dir, self.model_name),
-                                   num_classes=self.num_classes)
+                                   num_classes=self.num_classes,
+                                   use_cn_clip=self.use_cn_clip)
 
         trainer.train()
 
