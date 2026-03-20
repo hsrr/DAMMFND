@@ -2,25 +2,27 @@
 import torch
 from sklearn.metrics import recall_score, precision_score, f1_score, accuracy_score, roc_auc_score
 import numpy as np
+_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def clipdata2gpu(batch):
     batch_data = {
-        'content': batch[0].cuda(),
-        'content_masks': batch[1].cuda(),
-        'label': batch[2].cuda(),
-        'category': batch[3].cuda(),
-        'image':batch[4].cuda(),
-        'clip_image':batch[5].cuda(),
-        'clip_text': batch[6].cuda(),
-        'multi_category':batch[7].cuda()
+        'content': batch[0].to(_device),
+        'content_masks': batch[1].to(_device),
+        'label': batch[2].to(_device),
+        'category': batch[3].to(_device),
+        'image':batch[4].to(_device),
+        'clip_image':batch[5].to(_device),
+        'clip_text': batch[6].to(_device),
+        'multi_category':batch[7].to(_device)
     }
     return batch_data
 def data2gpu(batch):
     batch_data = {
-        'content': batch[0].cuda(),
-        'content_masks': batch[1].cuda(),
-        'label': batch[2].cuda(),
-        'category': batch[3].cuda(),
-        'image':batch[4].cuda()
+        'content': batch[0].to(_device),
+        'content_masks': batch[1].to(_device),
+        'label': batch[2].to(_device),
+        'category': batch[3].to(_device),
+        'image':batch[4].to(_device)
     }
     return batch_data
 

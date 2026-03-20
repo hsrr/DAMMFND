@@ -1,7 +1,4 @@
 import os
-from utils.clip_dataloader import bert_data as weibo_data
-from utils.weibo21_clip_dataloader import bert_data as weibo21_data
-from utils.custom_dataloader import bert_data as custom_data
 from model.dammfnd import Trainer as SGDOMAINTrainer
 
 class Run():
@@ -83,6 +80,7 @@ class Run():
 
     def get_dataloader(self,dataset):
         if dataset == "custom":
+            from utils.custom_dataloader import bert_data as custom_data
             loader = custom_data(
                 max_len=self.max_len,
                 batch_size=self.batchsize,
@@ -98,9 +96,11 @@ class Run():
 
         if self.emb_type == 'bert':
             if dataset =="weibo":
+                from utils.clip_dataloader import bert_data as weibo_data
                 loader = weibo_data(max_len=self.max_len, batch_size=self.batchsize, vocab_file=self.vocab_file,
                               category_dict=self.category_dict, num_workers=self.num_workers)
             if dataset =="weibo21":
+                from utils.weibo21_clip_dataloader import bert_data as weibo21_data
                 loader = weibo21_data(max_len=self.max_len, batch_size=self.batchsize, vocab_file=self.vocab_file,
                               category_dict=self.category_dict, num_workers=self.num_workers)
 

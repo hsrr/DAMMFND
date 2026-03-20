@@ -95,6 +95,7 @@ class DomainAwareTransformer(nn.Module):
 class DAMMFNDMODEL(torch.nn.Module):
     def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=1, use_cn_clip=True):
         super(DAMMFNDMODEL, self).__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_classes = num_classes
         self.use_cn_clip = use_cn_clip
         self.num_expert = 6
@@ -291,17 +292,18 @@ class DAMMFNDMODEL(torch.nn.Module):
 
         self.model_size = "base"
         self.image_model = models_mae.__dict__["mae_vit_{}_patch16".format(self.model_size)](norm_pix_loss=False)
-        self.image_model.cuda()
-        checkpoint = torch.load('./mae_pretrain_vit_{}.pth'.format(self.model_size), map_location='cpu')
-        self.image_model.load_state_dict(checkpoint['model'], strict=False)
+        self.image_model.to(self.device)
+        mae_path = './mae_pretrain_vit_{}.pth'.format(self.model_size)
+        if os.path.exists(mae_path):
+            checkpoint = torch.load(mae_path, map_location='cpu')
+            self.image_model.load_state_dict(checkpoint['model'], strict=False)
         for param in self.image_model.parameters():
             param.requires_grad = False
 
-
         if self.use_cn_clip:
-            self.ClipModel, _ = load_from_name("ViT-B-16", device="cuda", download_root='./')
+            self.ClipModel, _ = load_from_name("ViT-B-16", device=str(self.device), download_root='./')
         else:
-            self.ClipModel, _ = openai_clip_module.load("ViT-B/16", device="cuda")
+            self.ClipModel, _ = openai_clip_module.load("ViT-B/16", device=self.device)
 
         self.fake_news_layernorm = LayerNorm(320 * 3, eps=1e-12)
         self.domain_classification_layernorm = LayerNorm(320 * 1, eps=1e-12)
@@ -600,16 +602,14 @@ class Trainer():
         self.mlp_dims = mlp_dims
         self.bert = bert
         self.dropout = dropout
-        if not os.path.exists(save_param_dir):
-            self.save_param_dir = os.makedirs(save_param_dir)
-        else:
-            self.save_param_dir = save_param_dir
+        os.makedirs(save_param_dir, exist_ok=True)
+        self.save_param_dir = save_param_dir
 
     def train(self):
         self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout,
                                   num_classes=self.num_classes, use_cn_clip=self.use_cn_clip)
-        if self.use_cuda:
-            self.model = self.model.cuda()
+        self._device = torch.device("cuda" if (self.use_cuda and torch.cuda.is_available()) else "cpu")
+        self.model = self.model.to(self._device)
         if self.num_classes > 1:
             loss_fn_main = torch.nn.CrossEntropyLoss()
         else:
@@ -653,7 +653,7 @@ class Trainer():
                     loss22_aux = loss_fn_bce(domain_aware_image_view.squeeze(), label.float())
                     loss32_auc = loss_fn_bce(domain_aware_fusion_view.squeeze(), label.float())
 
-                    uniform_target = torch.ones_like(text_fake_news, dtype=torch.float).cuda() / 9
+                    uniform_target = torch.ones_like(text_fake_news, dtype=torch.float).to(self._device) / 9
                     loss12 = F.kl_div(text_fake_news, uniform_target.float())
                     loss22 = F.kl_div(image_fake_news, uniform_target.float())
                     loss32 = F.kl_div(fusion_fake_news, uniform_target.float())
