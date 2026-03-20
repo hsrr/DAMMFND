@@ -15,10 +15,7 @@ try:
     from cn_clip.clip import load_from_name, available_models
 except ImportError:
     cn_clip_module = None
-try:
-    import clip as openai_clip_module
-except ImportError:
-    openai_clip_module = None
+from transformers import CLIPModel as HFCLIPModel
 
 
 
@@ -93,11 +90,13 @@ class DomainAwareTransformer(nn.Module):
 
 
 class DAMMFNDMODEL(torch.nn.Module):
-    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=1, use_cn_clip=True):
+    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=1,
+                 use_cn_clip=True, clip_model='openai/clip-vit-base-patch16'):
         super(DAMMFNDMODEL, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_classes = num_classes
         self.use_cn_clip = use_cn_clip
+        self.clip_model_path = clip_model
         self.num_expert = 6
         self.task_num = 2
         # self.domain_num = 9
@@ -303,7 +302,9 @@ class DAMMFNDMODEL(torch.nn.Module):
         if self.use_cn_clip:
             self.ClipModel, _ = load_from_name("ViT-B-16", device=str(self.device), download_root='./')
         else:
-            self.ClipModel, _ = openai_clip_module.load("ViT-B/16", device=self.device)
+            self.ClipModel = HFCLIPModel.from_pretrained(self.clip_model_path)
+            self.ClipModel.to(self.device)
+            self.ClipModel.requires_grad_(False)
 
         self.fake_news_layernorm = LayerNorm(320 * 3, eps=1e-12)
         self.domain_classification_layernorm = LayerNorm(320 * 1, eps=1e-12)
@@ -372,11 +373,19 @@ class DAMMFNDMODEL(torch.nn.Module):
         image_feature = self.image_model.forward_ying(image)  # ([64, 197, 768])
         clip_image = kwargs['clip_image']
         clip_text = kwargs['clip_text']
+        clip_attention_mask = kwargs.get('clip_attention_mask', None)
         with torch.no_grad():
-            clip_image_feature = self.ClipModel.encode_image(clip_image)  # ([64, 512])
-            clip_text_feature = self.ClipModel.encode_text(clip_text)  # ([64, 512])
-            clip_image_feature /= clip_image_feature.norm(dim=-1, keepdim=True)
-            clip_text_feature /= clip_text_feature.norm(dim=-1, keepdim=True)
+            if self.use_cn_clip:
+                clip_image_feature = self.ClipModel.encode_image(clip_image)  # ([64, 512])
+                clip_text_feature = self.ClipModel.encode_text(clip_text)  # ([64, 512])
+            else:
+                vision_out = self.ClipModel.vision_model(pixel_values=clip_image)
+                clip_image_feature = self.ClipModel.visual_projection(vision_out.pooler_output)
+                text_out = self.ClipModel.text_model(
+                    input_ids=clip_text, attention_mask=clip_attention_mask)
+                clip_text_feature = self.ClipModel.text_projection(text_out.pooler_output)
+            clip_image_feature = clip_image_feature / clip_image_feature.norm(dim=-1, keepdim=True)
+            clip_text_feature = clip_text_feature / clip_text_feature.norm(dim=-1, keepdim=True)
         clip_fusion_feature = torch.cat((clip_image_feature, clip_text_feature), dim=-1)  # torch.Size([64, 1024])
         clip_fusion_feature = self.clip_fusion(clip_fusion_feature.float())  # torch.Size([64, 320])
 
@@ -583,7 +592,8 @@ class Trainer():
                  early_stop=5,
                  epoches=100,
                  num_classes=1,
-                 use_cn_clip=True
+                 use_cn_clip=True,
+                 clip_model='openai/clip-vit-base-patch16'
                  ):
         self.lr = lr
         self.weight_decay = weight_decay
@@ -597,6 +607,7 @@ class Trainer():
         self.use_cuda = use_cuda
         self.num_classes = num_classes
         self.use_cn_clip = use_cn_clip
+        self.clip_model = clip_model
 
         self.emb_dim = emb_dim
         self.mlp_dims = mlp_dims
@@ -607,7 +618,8 @@ class Trainer():
 
     def train(self):
         self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout,
-                                  num_classes=self.num_classes, use_cn_clip=self.use_cn_clip)
+                                  num_classes=self.num_classes, use_cn_clip=self.use_cn_clip,
+                                  clip_model=self.clip_model)
         self._device = torch.device("cuda" if (self.use_cuda and torch.cuda.is_available()) else "cpu")
         self.model = self.model.to(self._device)
         if self.num_classes > 1:

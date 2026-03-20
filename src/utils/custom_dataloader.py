@@ -3,10 +3,9 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer
+from transformers import BertTokenizer, CLIPTokenizer, CLIPImageProcessor
 from torchvision import transforms
 from PIL import Image
-import clip
 
 
 def _init_fn(worker_id):
@@ -29,16 +28,18 @@ def word2input(texts, bert, max_len):
 
 
 class CustomJsonlDataset(Dataset):
-    def __init__(self, token_ids, masks, labels, categories, clip_texts,
-                 image_paths, mae_transform, clip_preprocess, num_domains=9):
+    def __init__(self, token_ids, masks, labels, categories, clip_input_ids,
+                 clip_attention_mask, image_paths, mae_transform,
+                 clip_image_processor, num_domains=9):
         self.token_ids = token_ids
         self.masks = masks
         self.labels = labels
         self.categories = categories
-        self.clip_texts = clip_texts
+        self.clip_input_ids = clip_input_ids
+        self.clip_attention_mask = clip_attention_mask
         self.image_paths = image_paths
         self.mae_transform = mae_transform
-        self.clip_preprocess = clip_preprocess
+        self.clip_image_processor = clip_image_processor
         self.num_domains = num_domains
 
         self.multi_category = torch.zeros(len(labels), num_domains)
@@ -54,7 +55,7 @@ class CustomJsonlDataset(Dataset):
             img = Image.new('RGB', (224, 224), (0, 0, 0))
 
         mae_img = self.mae_transform(img)
-        clip_img = self.clip_preprocess(img)
+        clip_pixel = self.clip_image_processor(images=img, return_tensors='pt')['pixel_values'].squeeze(0)
 
         return (
             self.token_ids[index],
@@ -62,21 +63,23 @@ class CustomJsonlDataset(Dataset):
             self.labels[index],
             self.categories[index],
             mae_img,
-            clip_img,
-            self.clip_texts[index],
+            clip_pixel,
+            self.clip_input_ids[index],
             self.multi_category[index],
+            self.clip_attention_mask[index],
         )
 
 
 class bert_data():
     def __init__(self, max_len, batch_size, bert, category_dict,
-                 num_workers=2, root_dir=None):
+                 num_workers=2, root_dir=None, clip_model='openai/clip-vit-base-patch16'):
         self.max_len = max_len
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.bert = bert
         self.category_dict = category_dict
         self.root_dir = root_dir
+        self.clip_model = clip_model
 
         self.mae_transform = transforms.Compose([
             transforms.Resize(256),
@@ -85,7 +88,8 @@ class bert_data():
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-        _, self.clip_preprocess = clip.load("ViT-B/16", device="cpu")
+        self.clip_image_processor = CLIPImageProcessor.from_pretrained(clip_model)
+        self.clip_tokenizer = CLIPTokenizer.from_pretrained(clip_model)
 
     def load_data(self, path, shuffle):
         data = []
@@ -106,17 +110,24 @@ class bert_data():
             image_paths = [os.path.join(data_dir, item['Id'] + ".png") for item in data]
 
         token_ids, masks = word2input(contents, self.bert, self.max_len)
-        clip_texts = clip.tokenize(contents, truncate=True)
+
+        clip_encoded = self.clip_tokenizer(
+            contents, padding='max_length', truncation=True,
+            max_length=77, return_tensors='pt'
+        )
+        clip_input_ids = clip_encoded['input_ids']
+        clip_attention_mask = clip_encoded['attention_mask']
 
         dataset = CustomJsonlDataset(
             token_ids=token_ids,
             masks=masks,
             labels=labels,
             categories=categories,
-            clip_texts=clip_texts,
+            clip_input_ids=clip_input_ids,
+            clip_attention_mask=clip_attention_mask,
             image_paths=image_paths,
             mae_transform=self.mae_transform,
-            clip_preprocess=self.clip_preprocess,
+            clip_image_processor=self.clip_image_processor,
         )
 
         dataloader = DataLoader(

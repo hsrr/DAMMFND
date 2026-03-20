@@ -28,6 +28,7 @@ class Run():
         self.dataset = config['dataset']
         self.num_classes = config.get('num_classes', 1)
         self.use_cn_clip = config.get('use_cn_clip', True)
+        self.clip_model = config.get('clip_model', 'openai/clip-vit-base-patch16')
 
         if config['dataset']=="weibo":
             self.root_path = '../data/'
@@ -88,6 +89,7 @@ class Run():
                 category_dict=self.category_dict,
                 num_workers=self.num_workers,
                 root_dir=self.image_root,
+                clip_model=self.clip_model,
             )
             train_loader = loader.load_data(self.train_path, shuffle=True)
             val_loader = loader.load_data(self.val_path, shuffle=False)
@@ -132,7 +134,8 @@ class Run():
                                    category_dict=self.category_dict, early_stop=self.early_stop, epoches=self.epoch,
                                    save_param_dir=os.path.join(self.save_param_dir, self.model_name),
                                    num_classes=self.num_classes,
-                                   use_cn_clip=self.use_cn_clip)
+                                   use_cn_clip=self.use_cn_clip,
+                                   clip_model=self.clip_model)
 
         trainer.train()
 

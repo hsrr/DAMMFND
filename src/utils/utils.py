@@ -15,6 +15,8 @@ def clipdata2gpu(batch):
         'clip_text': batch[6].to(_device),
         'multi_category':batch[7].to(_device)
     }
+    if len(batch) > 8:
+        batch_data['clip_attention_mask'] = batch[8].to(_device)
     return batch_data
 def data2gpu(batch):
     batch_data = {

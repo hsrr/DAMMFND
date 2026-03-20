@@ -11,7 +11,9 @@ parser.add_argument('--bert_vocab_file', default='./pretrained_model/chinese_rob
 parser.add_argument('--root_path', default='../data/')
 parser.add_argument('--bert', default='bert-base-uncased')
 parser.add_argument('--use_cn_clip', action='store_true', default=False,
-                    help='use CN-CLIP (Chinese); default uses OpenAI CLIP (English)')
+                    help='use CN-CLIP (Chinese); default uses HuggingFace CLIP (English)')
+parser.add_argument('--clip_model', default='/map-vepfs/liniuniu/hesirui/clip-vit-base-patch16',
+                    help='HuggingFace CLIP model path or name')
 parser.add_argument('--batchsize', type=int, default=64)
 parser.add_argument('--seed', type=int, default=3074)
 parser.add_argument('--gpu', default='0')
@@ -90,6 +92,7 @@ config = {
         'data_dir': args.data_dir,
         'image_root': args.image_root,
         'use_cn_clip': args.use_cn_clip,
+        'clip_model': args.clip_model,
         }
 
 if args.train_path is not None:
