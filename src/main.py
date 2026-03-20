@@ -29,8 +29,8 @@ parser.add_argument('--num_classes', type=int, default=6,
                     help='1 for binary (original), 6 for 6-class custom dataset')
 parser.add_argument('--data_dir', default='/map-vepfs/liniuniu/hesirui/datasets',
                     help='directory containing train/val/test jsonl files')
-parser.add_argument('--image_root', default='/map-vepfs/liniuniu/hesirui/datasets',
-                    help='root directory for images; if None, uses data_dir')
+parser.add_argument('--image_root', default='/map-vepfs/liniuniu/hesirui/datasets/AMG_MEDIA/train_imagesN',
+                    help='root directory for images (where Id.png files are)')
 parser.add_argument('--train_path', default='/map-vepfs/liniuniu/hesirui/datasets/train.jsonl',
                     help='path to train.jsonl')
 parser.add_argument('--val_path', default='/map-vepfs/liniuniu/hesirui/datasets/val.jsonl',

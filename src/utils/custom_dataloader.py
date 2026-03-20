@@ -51,7 +51,9 @@ class CustomJsonlDataset(Dataset):
         img_path = self.image_paths[index]
         try:
             img = Image.open(img_path).convert('RGB')
-        except Exception:
+        except Exception as e:
+            if index < 3:
+                print(f"[WARN] Failed to load image: {img_path} -> {e}")
             img = Image.new('RGB', (224, 224), (0, 0, 0))
 
         mae_img = self.mae_transform(img)
@@ -129,6 +131,17 @@ class bert_data():
         else:
             data_dir = os.path.dirname(path)
             image_paths = [os.path.join(data_dir, item['Id'] + ".png") for item in data]
+
+        exist_count = sum(1 for p in image_paths if os.path.isfile(p))
+        total = len(image_paths)
+        print(f"[DataLoader] {path}: {total} samples, {exist_count}/{total} images found")
+        if total > 0:
+            print(f"[DataLoader] Sample image paths:")
+            for p in image_paths[:3]:
+                status = "OK" if os.path.isfile(p) else "MISSING"
+                print(f"  [{status}] {p}")
+        if exist_count == 0:
+            print(f"[WARN] No images found! Check --image_root (current: {self.root_dir})")
 
         token_ids, masks = word2input(contents, self.bert, self.max_len)
 
