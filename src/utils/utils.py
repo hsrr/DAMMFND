@@ -43,27 +43,55 @@ class Averager():
 def metricsMultiClass(y_true, y_pred, num_classes):
     y_true = np.array(y_true)
     y_pred = np.array(y_pred)
-    result = {}
-    result['acc'] = accuracy_score(y_true, y_pred)
-    result['metric'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
-    result['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
-    result['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
-    result['f1_weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
 
     class_names = [
         "real_news", "image_forgery", "entity_inconsistency",
         "event_inconsistency", "temporal_inconsistency", "invalid_visual"
     ]
+
+    # ===== Multi-class (6-class) =====
+    multi_acc = accuracy_score(y_true, y_pred)
     per_class_f1 = f1_score(y_true, y_pred, average=None, labels=list(range(num_classes)), zero_division=0)
     per_class_prec = precision_score(y_true, y_pred, average=None, labels=list(range(num_classes)), zero_division=0)
     per_class_rec = recall_score(y_true, y_pred, average=None, labels=list(range(num_classes)), zero_division=0)
+    multi_cf1 = float(np.mean(per_class_f1))
+    multi_of1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+
+    # ===== Binary (label 0 = real, labels 1-5 = fake) =====
+    y_true_bin = (y_true > 0).astype(int)
+    y_pred_bin = (y_pred > 0).astype(int)
+    bin_acc = accuracy_score(y_true_bin, y_pred_bin)
+    bin_per_class_f1 = f1_score(y_true_bin, y_pred_bin, average=None, labels=[0, 1], zero_division=0)
+    bin_per_class_prec = precision_score(y_true_bin, y_pred_bin, average=None, labels=[0, 1], zero_division=0)
+    bin_per_class_rec = recall_score(y_true_bin, y_pred_bin, average=None, labels=[0, 1], zero_division=0)
+    bin_cf1 = float(np.mean(bin_per_class_f1))
+
+    result = {}
+
+    result['binary_acc'] = round(bin_acc, 4)
+    result['binary_CF1'] = round(bin_cf1, 4)
+    result['binary_real'] = {
+        'precision': round(float(bin_per_class_prec[0]), 4),
+        'recall': round(float(bin_per_class_rec[0]), 4),
+        'F1': round(float(bin_per_class_f1[0]), 4),
+    }
+    result['binary_fake'] = {
+        'precision': round(float(bin_per_class_prec[1]), 4),
+        'recall': round(float(bin_per_class_rec[1]), 4),
+        'F1': round(float(bin_per_class_f1[1]), 4),
+    }
+
+    result['multi_acc'] = round(multi_acc, 4)
+    result['multi_CF1'] = round(multi_cf1, 4)
     for i in range(num_classes):
         name = class_names[i] if i < len(class_names) else f"class_{i}"
-        result[name] = {
+        result[f'multi_{name}'] = {
             'precision': round(float(per_class_prec[i]), 4),
             'recall': round(float(per_class_rec[i]), 4),
-            'fscore': round(float(per_class_f1[i]), 4),
+            'F1': round(float(per_class_f1[i]), 4),
         }
+
+    result['metric'] = multi_cf1
     return result
 
 

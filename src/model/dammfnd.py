@@ -680,9 +680,39 @@ class Trainer():
         self.model.load_state_dict(torch.load(os.path.join(self.save_param_dir, 'parameter_dammfnd.pkl')))
         print("开始进行最后的测试")
         results0 = self.test(self.test_loader)
+        if self.num_classes > 1:
+            self._print_results(results0)
         print("final: ", results0)
 
         return results0, os.path.join(self.save_param_dir, 'parameter_dammfnd.pkl')
+
+    def _print_results(self, res):
+        print("\n" + "=" * 60)
+        print("  Binary Classification (real vs fake)")
+        print("=" * 60)
+        print(f"  Acc:  {res['binary_acc']:.4f}")
+        print(f"  CF1:  {res['binary_CF1']:.4f}")
+        print(f"  Real  ->  P: {res['binary_real']['precision']:.4f}  "
+              f"R: {res['binary_real']['recall']:.4f}  F1: {res['binary_real']['F1']:.4f}")
+        print(f"  Fake  ->  P: {res['binary_fake']['precision']:.4f}  "
+              f"R: {res['binary_fake']['recall']:.4f}  F1: {res['binary_fake']['F1']:.4f}")
+
+        print("\n" + "=" * 60)
+        print("  Multi-class Classification (6 classes)")
+        print("=" * 60)
+        print(f"  Acc:  {res['multi_acc']:.4f}")
+        print(f"  CF1:  {res['multi_CF1']:.4f}")
+        class_names = [
+            "real_news", "image_forgery", "entity_inconsistency",
+            "event_inconsistency", "temporal_inconsistency", "invalid_visual"
+        ]
+        for name in class_names:
+            key = f'multi_{name}'
+            if key in res:
+                c = res[key]
+                print(f"  {name:25s} ->  P: {c['precision']:.4f}  "
+                      f"R: {c['recall']:.4f}  F1: {c['F1']:.4f}")
+        print("=" * 60 + "\n")
 
     def test(self, dataloader):
         pred = []
