@@ -71,6 +71,21 @@ class MLP_Mu(torch.nn.Module):
     def forward(self,x):
         return self.mlp(x)
 
+class MLP_NC(torch.nn.Module):
+    def __init__(self, input_dim, embed_dims, dropout, num_classes=1):
+        super(MLP_NC, self).__init__()
+        layers = list()
+        for embed_dim in embed_dims:
+            layers.append(torch.nn.Linear(input_dim, embed_dim))
+            layers.append(torch.nn.BatchNorm1d(embed_dim))
+            layers.append(torch.nn.GELU())
+            layers.append(torch.nn.Dropout(p=dropout))
+            input_dim = embed_dim
+        layers.append(torch.nn.Linear(input_dim, num_classes))
+        self.mlp = torch.nn.Sequential(*layers)
+    def forward(self, x):
+        return self.mlp(x)
+
 class MLP_fusion(torch.nn.Module):
     def __init__(self,input_dim,out_dim,embed_dims,dropout):
         super(MLP_fusion, self).__init__()
