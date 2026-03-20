@@ -38,6 +38,33 @@ class Averager():
         return self.v
 
 
+def metricsMultiClass(y_true, y_pred, num_classes):
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    result = {}
+    result['acc'] = accuracy_score(y_true, y_pred)
+    result['metric'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    result['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
+    result['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    result['f1_weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+
+    class_names = [
+        "real_news", "image_forgery", "entity_inconsistency",
+        "event_inconsistency", "temporal_inconsistency", "invalid_visual"
+    ]
+    per_class_f1 = f1_score(y_true, y_pred, average=None, labels=list(range(num_classes)), zero_division=0)
+    per_class_prec = precision_score(y_true, y_pred, average=None, labels=list(range(num_classes)), zero_division=0)
+    per_class_rec = recall_score(y_true, y_pred, average=None, labels=list(range(num_classes)), zero_division=0)
+    for i in range(num_classes):
+        name = class_names[i] if i < len(class_names) else f"class_{i}"
+        result[name] = {
+            'precision': round(float(per_class_prec[i]), 4),
+            'recall': round(float(per_class_rec[i]), 4),
+            'fscore': round(float(per_class_f1[i]), 4),
+        }
+    return result
+
+
 def metricsTrueFalse(y_true, y_pred, category, category_dict):
     y_GT = y_true
     metricsTrueFalse = metrics(y_true, y_pred, category, category_dict)
