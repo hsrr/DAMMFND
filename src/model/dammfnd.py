@@ -7,6 +7,7 @@ import torch.nn as nn
 import models_mae
 from utils.utils import data2gpu, Averager, metrics, Recorder, clipdata2gpu
 from utils.utils import metricsTrueFalse
+from utils.utils import clipdata2gpu_sixclass, metrics_multiclass
 from .layers import *
 from .pivot import *
 from timm.models.vision_transformer import Block
@@ -86,8 +87,9 @@ class DomainAwareTransformer(nn.Module):
 
 
 class DAMMFNDMODEL(torch.nn.Module):
-    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout):
+    def __init__(self, emb_dim, mlp_dims, bert, out_channels, dropout, num_classes=2):
         super(DAMMFNDMODEL, self).__init__()
+        self.num_classes = num_classes
         self.num_expert = 6
         self.task_num = 2
         # self.domain_num = 9
@@ -220,21 +222,17 @@ class DAMMFNDMODEL(torch.nn.Module):
         self.fusion_attention = TokenAttention(self.unified_dim * 2)
         self.final_attention = TokenAttention(320)
 
-        self.text_classifier = MLP(320, mlp_dims, dropout)
-        self.text_classifier_Mu = MLP_Mu(320, mlp_dims, dropout)
-        self.image_classifier = MLP(320, mlp_dims, dropout)
-        self.image_classifier_Mu = MLP_Mu(320, mlp_dims, dropout)
-        self.fusion_classifier = MLP(320, mlp_dims, dropout)
-        self.fusion_classifier_Mu = MLP_Mu(320, mlp_dims, dropout)
+        self.text_classifier = MLP(320, mlp_dims, dropout, num_classes)
+        self.image_classifier = MLP(320, mlp_dims, dropout, num_classes)
+        self.fusion_classifier = MLP(320, mlp_dims, dropout, num_classes)
 
-        self.max_classifier = MLP(320 * 1, mlp_dims, dropout)
+        self.max_classifier = MLP(320 * 1, mlp_dims, dropout, num_classes)
 
+        self.domain_aware_text_classifier = MLP(320 * 1, mlp_dims, dropout, num_classes)
+        self.domain_aware_image_classifier = MLP(320 * 1, mlp_dims, dropout, num_classes)
+        self.domain_aware_fusion_classifier = MLP(320 * 1, mlp_dims, dropout, num_classes)
 
-        self.domain_aware_text_classifier = MLP(320 * 1, mlp_dims, dropout)
-        self.domain_aware_image_classifier = MLP(320 * 1, mlp_dims, dropout)
-        self.domain_aware_fusion_classifier = MLP(320 * 1, mlp_dims, dropout)
-
-        self.domain_aware_total_classifier = MLP(320 * 1, mlp_dims, dropout)
+        self.domain_aware_total_classifier = MLP(320 * 1, mlp_dims, dropout, num_classes)
 
 
         share_classifier_list = []
@@ -262,9 +260,6 @@ class DAMMFNDMODEL(torch.nn.Module):
         self.domain_fusion = MLP_fusion(320, 320, [348], 0.1)
         self.MLP_fusion0 = MLP_fusion(768 * 2, 768, [348], 0.1)
         self.clip_fusion = clip_fuion(1024, 320, [348], 0.1)
-        self.att_mlp_text = MLP_fusion(320, 2, [174], 0.1)
-        self.att_mlp_img = MLP_fusion(320, 2, [174], 0.1)
-        self.att_mlp_mm = MLP_fusion(320, 2, [174], 0.1)
 
 
 
@@ -280,7 +275,6 @@ class DAMMFNDMODEL(torch.nn.Module):
         self.ClipModel, _ = load_from_name("ViT-B-16", device="cuda", download_root='./')
 
         self.fake_news_layernorm = LayerNorm(320 * 3, eps=1e-12)
-        self.domain_classification_layernorm = LayerNorm(320 * 1, eps=1e-12)
         self.gate_trans = nn.Sequential(
             nn.Linear(320 * 1, 3 * 320, bias=False),
             nn.GELU(),
@@ -385,7 +379,6 @@ class DAMMFNDMODEL(torch.nn.Module):
             fusion_gate_out_list.append(gate_out)
         self.fusion_gate_out_list = fusion_gate_out_list
 
-        text_gate_expert_value = []
         text_experts_feature = 0
         text_gate_share_expert_value = []
         for i in range(1):
@@ -401,14 +394,6 @@ class DAMMFNDMODEL(torch.nn.Module):
             text_experts_feature = gate_expert
             text_gate_share_expert_value.append(gate_share_expert)
 
-        att = F.softmax(self.att_mlp_text(text_experts_feature), dim=-1)
-        text_experts_feature0 = att[:, 0].view(-1, 1)*text_experts_feature
-        text_experts_feature1 = att[:, 1].view(-1, 1)*text_experts_feature
-        text_gate_expert_value.append(text_experts_feature0)
-        text_gate_expert_value.append(text_experts_feature1)
-
-
-        image_gate_expert_value = []
         image_experts_feature = 0
         image_gate_share_expert_value = []
         for i in range(1):
@@ -424,16 +409,7 @@ class DAMMFNDMODEL(torch.nn.Module):
             image_experts_feature = gate_expert
             image_gate_share_expert_value.append(gate_share_expert)
 
-        att = F.softmax(self.att_mlp_img(image_experts_feature), dim=-1)
-        image_experts_feature0 = att[:, 0].view(-1, 1)*image_experts_feature
-        image_experts_feature1 = att[:, 1].view(-1, 1)*image_experts_feature
-        image_gate_expert_value.append(image_experts_feature0)
-        image_gate_expert_value.append(image_experts_feature1)
-
-
-        # clip_fusion_feature
-        # fusion
-
+        # Fusion via CLIP + shared expert features
         text = text_gate_share_expert_value[0]
         image = image_gate_share_expert_value[0]
         fusion_share_feature = torch.cat((clip_fusion_feature, text, image), dim=-1)
@@ -446,84 +422,48 @@ class DAMMFNDMODEL(torch.nn.Module):
             fusion_gate_out_list0.append(gate_out)
         self.fusion_gate_out_list0 = fusion_gate_out_list0
 
-        fusion_gate_expert_value0 = []
         fusion_experts_feature = 0
-        fusion_gate_share_expert_value0 = []
         for m in range(1):
             share_gate_expert0 = 0
-            gate_spacial_expert = 0
-            gate_share_expert = 0
             for n in range(self.num_expert):
                 fusion_tmp_expert0 = self.fusion_experts[m][n](fusion_share_feature)
                 share_gate_expert0 += (fusion_tmp_expert0 * self.fusion_gate_out_list0[m][:, n].unsqueeze(1))
             for n in range(self.num_expert * 2):
                 fusion_tmp_expert0 = self.fusion_share_expert[0][n](fusion_share_feature)
                 share_gate_expert0 += (
-                            fusion_tmp_expert0 * self.fusion_gate_out_list0[m][:, (self.num_expert + n)].unsqueeze(1))
-                gate_share_expert += (
-                            fusion_tmp_expert0 * self.fusion_gate_out_list0[m][:, (self.num_expert + n)].unsqueeze(1))
-            #fusion_gate_expert_value0.append(share_gate_expert0)
-            fusion_gate_share_expert_value0.append(gate_share_expert)
-            fusion_experts_feature = fusion_tmp_expert0
+                    fusion_tmp_expert0 * self.fusion_gate_out_list0[m][:, (self.num_expert + n)].unsqueeze(1))
+            fusion_experts_feature = share_gate_expert0
 
-        att = F.softmax(self.att_mlp_mm(fusion_experts_feature), dim=-1)
-        fusion_experts_feature0 = att[:, 0].view(-1, 1)*fusion_experts_feature
-        fusion_experts_feature1 = att[:, 1].view(-1, 1)*fusion_experts_feature
-        fusion_gate_expert_value0.append(fusion_experts_feature0)
-        fusion_gate_expert_value0.append(fusion_experts_feature1)
+        # Per-view classification (num_classes outputs)
+        text_pred = self.text_classifier(text_experts_feature)    # [batch, num_classes]
+        image_pred = self.image_classifier(image_experts_feature) # [batch, num_classes]
+        fusion_pred = self.fusion_classifier(fusion_experts_feature) # [batch, num_classes]
 
+        # Cross-view feature aggregation
+        combined_feature = text_experts_feature + image_experts_feature + fusion_experts_feature
 
-        # text
-        text_two_task = []
-        image_two_task = []
-        fusion_two_task = []
-        text_two_task.append(self.text_classifier(text_gate_expert_value[0]).squeeze(1))
-        text_two_task.append(self.text_classifier_Mu(text_gate_expert_value[1]).squeeze(1))
-        image_two_task.append(self.image_classifier(image_gate_expert_value[0]).squeeze(1))
-        image_two_task.append(self.image_classifier_Mu(image_gate_expert_value[1]).squeeze(1))
-        fusion_two_task.append(self.fusion_classifier(fusion_gate_expert_value0[0]).squeeze(1))
-        fusion_two_task.append(self.fusion_classifier_Mu(fusion_gate_expert_value0[1]).squeeze(1))
+        # Cross-view gated features
+        text_gated = self.gate_text_prefer(combined_feature) * text_experts_feature
+        image_gated = self.gate_image_prefer(combined_feature) * image_experts_feature
+        fusion_gated = self.gate_fusion_prefer(combined_feature) * fusion_experts_feature
 
-        
-        
-        # Domain Disentanglement
-        text_fake_news = torch.softmax(text_two_task[0],-1)
-        image_fake_news = torch.softmax(image_two_task[0],-1)
-        fusion_fake_news = torch.softmax(fusion_two_task[0],-1)
+        # Multi-view aware classifiers
+        da_text_view = self.domain_aware_text_classifier(text_experts_feature + text_gated)       # [batch, num_classes]
+        da_image_view = self.domain_aware_image_classifier(image_experts_feature + image_gated)    # [batch, num_classes]
+        da_fusion_view = self.domain_aware_fusion_classifier(fusion_experts_feature + fusion_gated) # [batch, num_classes]
 
+        # Multi-view Decision Layer
+        weight_common = self.attention(
+            [text_experts_feature, image_experts_feature, fusion_experts_feature],
+            combined_feature
+        )  # [batch, 3]
 
-        text_multi_domain = torch.softmax(text_two_task[1], -1) # [64, 9]
-        image_multi_domain = torch.softmax(image_two_task[1], -1)
-        fusion_multi_domain = torch.softmax(fusion_two_task[1], -1)
+        # Weighted combination of per-view logits
+        final_logits = weight_common[:, 0].unsqueeze(-1) * da_text_view + \
+                       weight_common[:, 1].unsqueeze(-1) * da_image_view + \
+                       weight_common[:, 2].unsqueeze(-1) * da_fusion_view  # [batch, num_classes]
 
-
-        multi_label_feature = text_gate_expert_value[0] + image_gate_expert_value[0] + fusion_gate_expert_value0[0]
-        fake_news_feature = text_gate_expert_value[1] + image_gate_expert_value[1] + fusion_gate_expert_value0[1]
-
-
-        # Domain-Aware Multi-View Discriminator
-        text_domain_features = text_gate_expert_value[0]
-        image_domain_features = image_gate_expert_value[0]
-        fusion_domain_features = fusion_gate_expert_value0[0]
-
-        text_domain_features = self.gate_text_prefer(fake_news_feature) * text_domain_features
-        image_domain_features = self.gate_image_prefer(fake_news_feature) * image_domain_features
-        fusion_domain_features = self.gate_fusion_prefer(fake_news_feature) * fusion_domain_features
-
-        domain_aware_text_view = torch.sigmoid(self.domain_aware_text_classifier(text_gate_expert_value[0] + text_domain_features).squeeze())
-        domain_aware_image_view = torch.sigmoid(self.domain_aware_image_classifier(image_gate_expert_value[0] + image_domain_features).squeeze())
-        domain_aware_fusion_view = torch.sigmoid(self.domain_aware_fusion_classifier(fusion_gate_expert_value0[0] + fusion_domain_features).squeeze())
-
-        # Domain-Enhanced Multi-view Decision Layer 
-        weight_common = self.attention([text_gate_expert_value[0], image_gate_expert_value[0], fusion_gate_expert_value0[0]], multi_label_feature)
-
-        fake_news_sigmoid = weight_common[:, 0].squeeze() * domain_aware_text_view + \
-                            weight_common[:, 1].squeeze() * domain_aware_image_view + \
-                            weight_common[:, 2].squeeze() * domain_aware_fusion_view 
-
-        fake_news_sigmoid = torch.clamp(fake_news_sigmoid, min=0.0, max=1.0)
-
-        return fake_news_sigmoid, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view
+        return final_logits, text_pred, image_pred, fusion_pred, da_text_view, da_image_view, da_fusion_view
 
 
 
@@ -541,6 +481,7 @@ class Trainer():
                  category_dict,
                  weight_decay,
                  save_param_dir,
+                 num_classes=6,
                  loss_weight=[1, 0.006, 0.009, 5e-5],
                  early_stop=5,
                  epoches=100
@@ -555,21 +496,22 @@ class Trainer():
         self.category_dict = category_dict
         self.loss_weight = loss_weight
         self.use_cuda = use_cuda
+        self.num_classes = num_classes
 
         self.emb_dim = emb_dim
         self.mlp_dims = mlp_dims
         self.bert = bert
         self.dropout = dropout
         if not os.path.exists(save_param_dir):
-            self.save_param_dir = os.makedirs(save_param_dir)
-        else:
-            self.save_param_dir = save_param_dir
+            os.makedirs(save_param_dir)
+        self.save_param_dir = save_param_dir
 
     def train(self):
-        self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout)
+        self.model = DAMMFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout,
+                                  num_classes=self.num_classes)
         if self.use_cuda:
             self.model = self.model.cuda()
-        loss_fn = torch.nn.BCELoss()
+        loss_fn = torch.nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.98)
         recorder = Recorder(self.early_stop)
@@ -578,32 +520,18 @@ class Trainer():
             train_data_iter = tqdm.tqdm(self.train_loader)
             avg_loss = Averager()
             for step_n, batch in enumerate(train_data_iter):
-                batch_data = clipdata2gpu(batch)
+                batch_data = clipdata2gpu_sixclass(batch)
                 label = batch_data['label']
-                category = batch_data['multi_category']
-                labels_domain = category
 
-                label0, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view = self.model(
-                    **batch_data)
-                loss0 = loss_fn(label0, label.float())
+                final_logits, text_pred, image_pred, fusion_pred, \
+                    da_text, da_image, da_fusion = self.model(**batch_data)
 
+                loss_main = loss_fn(final_logits, label)
+                loss_text = loss_fn(da_text, label)
+                loss_image = loss_fn(da_image, label)
+                loss_fusion = loss_fn(da_fusion, label)
 
-                loss11 = torch.nn.functional.binary_cross_entropy_with_logits(text_multi_domain, labels_domain.float())
-                loss21 = torch.nn.functional.binary_cross_entropy_with_logits(image_multi_domain, labels_domain.float())
-                loss31 = torch.nn.functional.binary_cross_entropy_with_logits(fusion_multi_domain,
-                                                                              labels_domain.float())
-
-
-                loss12_aux = loss_fn(domain_aware_text_view.squeeze(), label.float())
-                loss22_aux = loss_fn(domain_aware_image_view.squeeze(), label.float())
-                loss32_auc = loss_fn(domain_aware_fusion_view.squeeze(), label.float())
-
-                uniform_target = torch.ones_like(text_fake_news, dtype=torch.float).cuda() / 9
-                loss12 = F.kl_div(text_fake_news, uniform_target.float())
-                loss22 = F.kl_div(image_fake_news, uniform_target.float())
-                loss32 = F.kl_div(fusion_fake_news, uniform_target.float())
-
-                loss = loss0 + (loss11 + loss12 + loss21 + loss22 + loss31 + loss32) / 6 + (loss12_aux + loss22_aux + loss32_auc) / 3.0
+                loss = loss_main + (loss_text + loss_image + loss_fusion) / 3.0
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -632,19 +560,17 @@ class Trainer():
     def test(self, dataloader):
         pred = []
         label = []
-        category = []
         self.model.eval()
         data_iter = tqdm.tqdm(dataloader)
         for step_n, batch in enumerate(data_iter):
             with torch.no_grad():
-                batch_data = clipdata2gpu(batch)
+                batch_data = clipdata2gpu_sixclass(batch)
                 batch_label = batch_data['label']
-                batch_category = batch_data['category']
-                batch_label_pred, _, _, _, _, _, _, _, _, _ = self.model(**batch_data)
+                final_logits, _, _, _, _, _, _ = self.model(**batch_data)
+                batch_pred = torch.argmax(final_logits, dim=-1)
 
                 label.extend(batch_label.detach().cpu().numpy().tolist())
-                pred.extend(batch_label_pred.detach().cpu().numpy().tolist())
-                category.extend(batch_category.detach().cpu().numpy().tolist())
+                pred.extend(batch_pred.detach().cpu().numpy().tolist())
 
-        metric_res = metricsTrueFalse(label, pred, category, self.category_dict)
+        metric_res = metrics_multiclass(label, pred, self.num_classes)
         return metric_res

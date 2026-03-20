@@ -2,9 +2,9 @@ import os
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--model_name', default='dammfnd') 
-parser.add_argument('--dataset', default='weibo21')#weibo21 %% weibo
+parser.add_argument('--dataset', default='sixclass')  # weibo / weibo21 / sixclass
 parser.add_argument('--epoch', type=int, default=50)
-parser.add_argument('--max_len', type=int, default=197) # raw is 197
+parser.add_argument('--max_len', type=int, default=197)
 parser.add_argument('--num_workers', type=int, default=4)
 parser.add_argument('--early_stop', type=int, default=10)
 parser.add_argument('--bert_vocab_file', default='./pretrained_model/chinese_roberta_wwm_base_ext_pytorch/vocab.txt')
@@ -15,11 +15,13 @@ parser.add_argument('--seed', type=int, default=3074)
 parser.add_argument('--gpu', default='0')
 parser.add_argument('--bert_emb_dim', type=int, default=768)
 parser.add_argument('--w2v_emb_dim', type=int, default=200)
-# parser.add_argument('--lr', type=float, default=0.001) # weibo
-parser.add_argument('--lr', type=float, default=0.0001) # weibo21
+parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--emb_type', default='bert')
 parser.add_argument('--w2v_vocab_file', default='./pretrained_model/w2v/Tencent_AILab_Chinese_w2v_model.kv')
-parser.add_argument('--save_param_dir', default= './param_model')
+parser.add_argument('--save_param_dir', default='./param_model')
+parser.add_argument('--num_classes', type=int, default=6)
+parser.add_argument('--data_root', default='/map-vepfs/liniuniu/hesirui/datasets')
+parser.add_argument('--image_root', default='/map-vepfs/liniuniu/hesirui/datasets')
 args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
@@ -71,7 +73,10 @@ config = {
         'model_name': args.model_name,
         'seed': args.seed,
         'save_param_dir': args.save_param_dir,
-        'dataset':args.dataset
+        'dataset': args.dataset,
+        'num_classes': args.num_classes,
+        'data_root': args.data_root,
+        'image_root': args.image_root,
         }
 
 

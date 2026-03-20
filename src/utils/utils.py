@@ -14,6 +14,18 @@ def clipdata2gpu(batch):
         'multi_category':batch[7].cuda()
     }
     return batch_data
+
+def clipdata2gpu_sixclass(batch):
+    batch_data = {
+        'content': batch[0].cuda(),
+        'content_masks': batch[1].cuda(),
+        'label': batch[2].cuda(),
+        'category': batch[3].cuda(),
+        'image': batch[4].cuda(),
+        'clip_image': batch[5].cuda(),
+        'clip_text': batch[6].cuda(),
+    }
+    return batch_data
 def data2gpu(batch):
     batch_data = {
         'content': batch[0].cuda(),
@@ -169,3 +181,24 @@ class Recorder():
 
     def showfinal(self):
         print("Max", self.max)
+
+
+def metrics_multiclass(y_true, y_pred, num_classes=6):
+    res = {}
+    res['acc'] = accuracy_score(y_true, y_pred)
+    res['metric'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    res['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    res['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
+
+    class_names = ['real_news', 'image_forgery', 'entity_inconsist',
+                   'event_inconsist', 'time_inconsist', 'invalid_visual']
+    for i in range(num_classes):
+        y_true_bin = [1 if y == i else 0 for y in y_true]
+        y_pred_bin = [1 if y == i else 0 for y in y_pred]
+        name = class_names[i] if i < len(class_names) else f'class_{i}'
+        res[name] = {
+            'precision': round(precision_score(y_true_bin, y_pred_bin, zero_division=0), 4),
+            'recall': round(recall_score(y_true_bin, y_pred_bin, zero_division=0), 4),
+            'f1': round(f1_score(y_true_bin, y_pred_bin, zero_division=0), 4),
+        }
+    return res
