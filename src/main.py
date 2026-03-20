@@ -2,7 +2,7 @@ import os
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--model_name', default='dammfnd') 
-parser.add_argument('--dataset', default='weibo21')#weibo21 %% weibo %% custom
+parser.add_argument('--dataset', default='custom')#weibo21 %% weibo %% custom
 parser.add_argument('--epoch', type=int, default=50)
 parser.add_argument('--max_len', type=int, default=197) # raw is 197
 parser.add_argument('--num_workers', type=int, default=4)
@@ -20,15 +20,18 @@ parser.add_argument('--lr', type=float, default=0.0001) # weibo21
 parser.add_argument('--emb_type', default='bert')
 parser.add_argument('--w2v_vocab_file', default='./pretrained_model/w2v/Tencent_AILab_Chinese_w2v_model.kv')
 parser.add_argument('--save_param_dir', default= './param_model')
-parser.add_argument('--num_classes', type=int, default=1,
+parser.add_argument('--num_classes', type=int, default=6,
                     help='1 for binary (original), 6 for 6-class custom dataset')
 parser.add_argument('--data_dir', default='/map-vepfs/liniuniu/hesirui/datasets',
                     help='directory containing train/val/test jsonl files')
-parser.add_argument('--image_root', default=None,
+parser.add_argument('--image_root', default='/map-vepfs/liniuniu/hesirui/datasets',
                     help='root directory for images; if None, uses data_dir')
-parser.add_argument('--train_path', default=None, help='path to train.jsonl')
-parser.add_argument('--val_path', default=None, help='path to val.jsonl')
-parser.add_argument('--test_path', default=None, help='path to test.jsonl')
+parser.add_argument('--train_path', default='/map-vepfs/liniuniu/hesirui/datasets/train.jsonl',
+                    help='path to train.jsonl')
+parser.add_argument('--val_path', default='/map-vepfs/liniuniu/hesirui/datasets/val.jsonl',
+                    help='path to val.jsonl')
+parser.add_argument('--test_path', default='/map-vepfs/liniuniu/hesirui/datasets/test.jsonl',
+                    help='path to test.jsonl')
 args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
