@@ -119,10 +119,61 @@ def parse_mlp_dims(raw_dims: str) -> List[int]:
     return [int(dim) for dim in dims]
 
 
+def discover_test_path(data_dir: Path) -> Optional[Path]:
+    exact_candidates = [
+        data_dir / "test.jsonl",
+        data_dir / "test.json",
+        data_dir / "test.ndjson",
+    ]
+    for candidate in exact_candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    pattern_priority = [
+        "test*.jsonl",
+        "test*.json",
+        "*test*.jsonl",
+        "*test*.json",
+    ]
+    ranked_candidates: List[Tuple[int, str, Path]] = []
+    for pattern_rank, pattern in enumerate(pattern_priority):
+        for candidate in data_dir.rglob(pattern):
+            if not candidate.is_file():
+                continue
+            rel_path = str(candidate.relative_to(data_dir))
+            score = (
+                pattern_rank,
+                0 if candidate.parent == data_dir else 1,
+                len(candidate.parts),
+                len(rel_path),
+            )
+            ranked_candidates.append((score[0] * 1000 + score[1] * 100 + score[2] * 10 + score[3], rel_path, candidate))
+
+    if not ranked_candidates:
+        return None
+
+    ranked_candidates.sort(key=lambda item: (item[0], item[1]))
+    return ranked_candidates[0][2].resolve()
+
+
+def summarize_annotation_candidates(data_dir: Path, limit: int = 10) -> List[str]:
+    candidates: List[str] = []
+    for pattern in ("*.jsonl", "*.json", "*.ndjson"):
+        for candidate in data_dir.rglob(pattern):
+            if candidate.is_file():
+                candidates.append(str(candidate.relative_to(data_dir)))
+    candidates = sorted(set(candidates))
+    return candidates[:limit]
+
+
 def resolve_input_paths(args: argparse.Namespace) -> Dict[str, Path]:
     data_dir = Path(args.data_dir).expanduser().resolve()
     checkpoint = Path(args.checkpoint).expanduser().resolve()
-    test_path = Path(args.test_path).expanduser().resolve() if args.test_path else data_dir / "test.jsonl"
+    if args.test_path:
+        test_path = Path(args.test_path).expanduser().resolve()
+    else:
+        discovered_test_path = discover_test_path(data_dir)
+        test_path = discovered_test_path if discovered_test_path is not None else data_dir / "test.jsonl"
     if args.test_image_root:
         test_image_root = Path(args.test_image_root).expanduser().resolve()
     elif args.image_root:
@@ -141,9 +192,19 @@ def resolve_input_paths(args: argparse.Namespace) -> Dict[str, Path]:
 
 
 def validate_paths(paths: Dict[str, Path], args: argparse.Namespace) -> None:
-    for key in ("checkpoint", "data_dir", "test_path", "test_image_root"):
+    for key in ("checkpoint", "data_dir", "test_image_root"):
         if not paths[key].exists():
             raise FileNotFoundError(f"{key} not found: {paths[key]}")
+    if not paths["test_path"].exists():
+        candidates = summarize_annotation_candidates(paths["data_dir"])
+        message = f"test_path not found: {paths['test_path']}"
+        if args.test_path:
+            message += ". Please pass a valid --test-path."
+        else:
+            message += ". Could not auto-discover a test annotation file under --data-dir."
+        if candidates:
+            message += " Candidate annotation files: " + ", ".join(candidates)
+        raise FileNotFoundError(message)
     bert_path = Path(args.bert).expanduser()
     if bert_path.exists():
         pass
