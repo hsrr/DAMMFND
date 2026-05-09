@@ -22,6 +22,16 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+try:
+    from thop import profile as thop_profile
+except ImportError:
+    thop_profile = None
+
+try:
+    from fvcore.nn import FlopCountAnalysis
+except ImportError:
+    FlopCountAnalysis = None
+
 SRC_DIR = Path(__file__).resolve().parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -38,6 +48,17 @@ CLASS_NAMES = [
     "temporal_inconsistency",
     "invalid_visual",
 ]
+
+
+class ProfilingWrapper(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, input_names: Sequence[str]) -> None:
+        super().__init__()
+        self.model = model
+        self.input_names = list(input_names)
+
+    def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
+        kwargs = {name: value for name, value in zip(self.input_names, inputs)}
+        return self.model(**kwargs)[0]
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,6 +128,19 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Only evaluate the first N batches. 0 means full test set.",
+    )
+    parser.add_argument(
+        "--flops-backend",
+        type=str,
+        default="auto",
+        choices=("auto", "thop", "fvcore", "none"),
+        help="Backend used to estimate MACs/FLOPs.",
+    )
+    parser.add_argument(
+        "--print-classification-metrics",
+        action="store_true",
+        default=False,
+        help="If set, print binary and 6-class classification metrics in addition to performance metrics.",
     )
     parser.add_argument("--output-json", type=str, default=None, help="Optional path to save the report as JSON.")
     return parser.parse_args()
@@ -361,6 +395,102 @@ def count_parameters(model: torch.nn.Module) -> Dict[str, int]:
     }
 
 
+def build_profile_inputs(batch_data: Dict[str, Any]) -> Tuple[List[str], Tuple[torch.Tensor, ...]]:
+    input_names = [
+        "content",
+        "content_masks",
+        "image",
+        "clip_image",
+        "clip_text",
+        "multi_category",
+    ]
+    if "clip_attention_mask" in batch_data:
+        input_names.append("clip_attention_mask")
+    sample_inputs = tuple(batch_data[name] for name in input_names)
+    return input_names, sample_inputs
+
+
+def _profile_with_backend(
+    model: torch.nn.Module,
+    sample_inputs: Tuple[torch.Tensor, ...],
+    input_names: Sequence[str],
+    backend: str,
+) -> Dict[str, Any]:
+    wrapper = ProfilingWrapper(model, input_names)
+    report = {
+        "backend": backend,
+        "forward_macs": None,
+        "forward_flops": None,
+        "notes": [],
+    }
+
+    with torch.inference_mode():
+        if backend == "thop":
+            macs, _ = thop_profile(wrapper, inputs=sample_inputs, verbose=False)
+            report["forward_macs"] = float(macs)
+            report["forward_flops"] = float(macs * 2.0)
+            report["notes"].append("FLOPs are reported as 2 x MACs under the thop convention.")
+            return report
+
+        if backend == "fvcore":
+            analysis = FlopCountAnalysis(wrapper, sample_inputs)
+            flops = analysis.total()
+            report["forward_macs"] = float(flops)
+            report["forward_flops"] = float(flops * 2.0)
+            unsupported = analysis.unsupported_ops()
+            if unsupported:
+                report["notes"].append(
+                    "Unsupported ops skipped by fvcore: "
+                    + ", ".join(f"{name} x {count}" for name, count in unsupported.items())
+                )
+            report["notes"].append("FLOPs are approximated as 2 x fvcore-reported ops.")
+            return report
+
+    raise ValueError(f"Unsupported backend: {backend}")
+
+
+def profile_compute_cost(
+    model: torch.nn.Module,
+    sample_batch: Dict[str, Any],
+    backend: str,
+) -> Dict[str, Any]:
+    input_names, sample_inputs = build_profile_inputs(sample_batch)
+    report = {
+        "backend": "none",
+        "forward_macs": None,
+        "forward_flops": None,
+        "notes": [],
+    }
+
+    candidate_backends: List[str] = []
+    if backend == "auto":
+        if thop_profile is not None:
+            candidate_backends.append("thop")
+        if FlopCountAnalysis is not None:
+            candidate_backends.append("fvcore")
+    elif backend != "none":
+        candidate_backends.append(backend)
+
+    if not candidate_backends:
+        report["notes"].append("Install thop or fvcore to enable static compute analysis.")
+        return report
+
+    for candidate_backend in candidate_backends:
+        if candidate_backend == "thop" and thop_profile is None:
+            report["notes"].append("thop is not installed.")
+            continue
+        if candidate_backend == "fvcore" and FlopCountAnalysis is None:
+            report["notes"].append("fvcore is not installed.")
+            continue
+        try:
+            return _profile_with_backend(model, sample_inputs, input_names, candidate_backend)
+        except Exception as exc:
+            report["backend"] = candidate_backend
+            report["notes"].append(f"{candidate_backend} profiling failed: {exc}")
+
+    return report
+
+
 def safe_metric(
     func: Any,
     *metric_args: Any,
@@ -490,6 +620,7 @@ def benchmark_single_sample_latency(
             sample_batch[key] = value
     forward_kwargs = make_forward_kwargs(sample_batch)
     timings_ms: List[float] = []
+    ttfp_ms: List[float] = []
 
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -509,9 +640,20 @@ def benchmark_single_sample_latency(
             _ = model(**forward_kwargs)
             maybe_sync(device)
             end = time.perf_counter()
-            timings_ms.append((end - start) * 1000.0)
+            elapsed_ms = (end - start) * 1000.0
+            timings_ms.append(elapsed_ms)
+            ttfp_ms.append(elapsed_ms)
 
     metrics = summarize_ms(timings_ms)
+    metrics["ttfp_mean_ms"] = float(statistics.mean(ttfp_ms)) if ttfp_ms else float("nan")
+    metrics["ttfp_p95_ms"] = percentile(ttfp_ms, 95)
+    metrics["tpot_mean_ms"] = None
+    metrics["tpot_p95_ms"] = None
+    metrics["mean_output_seq_len"] = 1.0
+    metrics["tokens_per_second"] = float(1000.0 / metrics["mean_ms"]) if metrics["mean_ms"] > 0 else float("nan")
+    metrics["notes"] = [
+        "DAMMFND is a non-autoregressive classifier: TTFP equals one forward pass, TPOT is not applicable, and sequence length is fixed to 1."
+    ]
     metrics.update(current_cuda_memory(device))
     return metrics
 
@@ -527,6 +669,7 @@ def evaluate_and_profile(
     preds_list: List[int] = []
     forward_batch_latency_ms: List[float] = []
     e2e_batch_latency_ms: List[float] = []
+    forward_sample_latency_ms: List[float] = []
     total_samples = 0
     total_e2e_seconds = 0.0
     batches_measured = 0
@@ -567,8 +710,10 @@ def evaluate_and_profile(
             batch_size = int(labels.shape[0])
             total_samples += batch_size
             total_e2e_seconds += max(e2e_end - e2e_start, 0.0)
-            forward_batch_latency_ms.append((forward_end - forward_start) * 1000.0)
+            forward_elapsed_ms = (forward_end - forward_start) * 1000.0
+            forward_batch_latency_ms.append(forward_elapsed_ms)
             e2e_batch_latency_ms.append((e2e_end - e2e_start) * 1000.0)
+            forward_sample_latency_ms.append(forward_elapsed_ms / max(batch_size, 1))
             batches_measured += 1
 
     probabilities = np.concatenate(logits_list, axis=0) if logits_list else np.empty((0, model.num_classes))
@@ -584,6 +729,9 @@ def evaluate_and_profile(
         "classification": classification,
         "forward_batch_latency_ms": summarize_ms(forward_batch_latency_ms),
         "e2e_batch_latency_ms": summarize_ms(e2e_batch_latency_ms),
+        "forward_sample_latency_mean_ms": float(statistics.mean(forward_sample_latency_ms))
+        if forward_sample_latency_ms
+        else float("nan"),
         "eval_samples_per_sec": float(total_samples / total_e2e_seconds) if total_e2e_seconds > 0 else float("nan"),
         "cuda_memory_peak": current_cuda_memory(device),
     }
@@ -597,95 +745,141 @@ def safe_format(value: Optional[float]) -> str:
     return f"{value:.4f}"
 
 
+def humanize_count(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return "N/A"
+    units = ["", "K", "M", "G", "T", "P"]
+    scaled = float(value)
+    unit_index = 0
+    while abs(scaled) >= 1000.0 and unit_index < len(units) - 1:
+        scaled /= 1000.0
+        unit_index += 1
+    return f"{scaled:.4f} {units[unit_index]}".rstrip()
+
+
 def print_report(report: Dict[str, Any]) -> None:
     print("=== Setup ===")
     for key, value in report["setup"].items():
         print(f"{key}: {value}")
     print("")
 
-    print("=== Parameters ===")
-    print(f"params_total: {report['parameters']['params_total']}")
-    print(f"params_trainable: {report['parameters']['params_trainable']}")
+    compute_cost = report["compute_cost"]
+    print("[Profile] Computation cost")
+    print(f"  Params (total):      {humanize_count(report['parameters']['params_total'])}")
+    print(f"  Params (trainable):  {humanize_count(report['parameters']['params_trainable'])}")
+    print(f"  Forward MACs:        {humanize_count(compute_cost['forward_macs'])}")
+    print(f"  Forward FLOPs~:      {humanize_count(compute_cost['forward_flops'])}")
+    print(f"  Backend:             {compute_cost['backend']}")
+    if compute_cost["notes"]:
+        for note in compute_cost["notes"]:
+            print(f"  Note:                {note}")
     print("")
 
-    print("=== Single-Sample Forward Latency ===")
+    print("[Profile] Generate latency (single sample)")
     single = report["single_sample_forward_latency_ms"]
-    print(f"mean_ms: {safe_format(single['mean_ms'])}")
-    print(f"std_ms: {safe_format(single['std_ms'])}")
-    print(f"p50_ms: {safe_format(single['p50_ms'])}")
-    print(f"p90_ms: {safe_format(single['p90_ms'])}")
-    print(f"p95_ms: {safe_format(single['p95_ms'])}")
-    print(f"cuda_max_memory_allocated_mb: {safe_format(single['cuda_max_memory_allocated_mb'])}")
-    print(f"cuda_max_memory_reserved_mb: {safe_format(single['cuda_max_memory_reserved_mb'])}")
+    print(f"  Mean latency:        {safe_format(single['mean_ms'])} ms")
+    print(f"  Std latency:         {safe_format(single['std_ms'])} ms")
+    print(
+        "  P50 / P90 / P95:     "
+        f"{safe_format(single['p50_ms'])} / {safe_format(single['p90_ms'])} / {safe_format(single['p95_ms'])} ms"
+    )
+    print(
+        "  TTFP (首个预测延迟):  "
+        f"{safe_format(single['ttfp_mean_ms'])} ms (P95: {safe_format(single['ttfp_p95_ms'])} ms)"
+    )
+    print(
+        "  TPOT (单步增量延迟):   "
+        f"{safe_format(single['tpot_mean_ms'])} ms (P95: {safe_format(single['tpot_p95_ms'])} ms)"
+    )
+    print(f"  Mean gen seq len:    {safe_format(single['mean_output_seq_len'])}")
+    print(f"  Tokens / second:     {safe_format(single['tokens_per_second'])}")
+    if single["notes"]:
+        for note in single["notes"]:
+            print(f"  Note:                {note}")
     print("")
 
     perf = report["dataset_eval"]
-    print("=== Throughput & Batch Latency ===")
-    print(f"num_batches_measured: {perf['num_batches_measured']}")
-    print(f"num_samples_measured: {perf['num_samples_measured']}")
-    print(f"forward_batch_latency_mean_ms: {safe_format(perf['forward_batch_latency_ms']['mean_ms'])}")
-    print(f"forward_batch_latency_p95_ms: {safe_format(perf['forward_batch_latency_ms']['p95_ms'])}")
-    print(f"e2e_batch_latency_mean_ms: {safe_format(perf['e2e_batch_latency_ms']['mean_ms'])}")
-    print(f"e2e_batch_latency_p95_ms: {safe_format(perf['e2e_batch_latency_ms']['p95_ms'])}")
-    print(f"eval_samples_per_sec: {safe_format(perf['eval_samples_per_sec'])}")
-    print("")
-
-    multiclass = perf["classification"]["multiclass"]
-    print("=== Classification: Multi-class (6-way) ===")
-    print(f"accuracy: {safe_format(multiclass['accuracy'])}")
-    print(f"macro_precision: {safe_format(multiclass['macro_precision'])}")
-    print(f"macro_recall: {safe_format(multiclass['macro_recall'])}")
-    print(f"macro_f1: {safe_format(multiclass['macro_f1'])}")
-    print(f"weighted_f1: {safe_format(multiclass['weighted_f1'])}")
-    print(f"balanced_accuracy: {safe_format(multiclass['balanced_accuracy'])}")
-    print(f"roc_auc_ovr_macro: {safe_format(multiclass['roc_auc_ovr_macro'])}")
-    print(f"roc_auc_ovo_macro: {safe_format(multiclass['roc_auc_ovo_macro'])}")
-    print("confusion_matrix:")
-    for row in multiclass["confusion_matrix"]:
-        print(f"  {row}")
-    print("per_class:")
-    for class_name, metrics in multiclass["per_class"].items():
-        print(
-            f"  {class_name:25s} -> "
-            f"P: {safe_format(metrics['precision'])}  "
-            f"R: {safe_format(metrics['recall'])}  "
-            f"F1: {safe_format(metrics['f1'])}  "
-            f"support: {metrics['support']}"
-        )
-    print("")
-
-    binary = perf["classification"]["binary_real_vs_fake"]
-    print("=== Classification: Binary (real vs fake) ===")
-    print(f"accuracy: {safe_format(binary['accuracy'])}")
-    print(f"macro_precision: {safe_format(binary['macro_precision'])}")
-    print(f"macro_recall: {safe_format(binary['macro_recall'])}")
-    print(f"macro_f1: {safe_format(binary['macro_f1'])}")
-    print(f"balanced_accuracy: {safe_format(binary['balanced_accuracy'])}")
-    print(f"roc_auc: {safe_format(binary['roc_auc'])}")
-    print(f"pr_auc: {safe_format(binary['pr_auc'])}")
-    print("confusion_matrix:")
-    for row in binary["confusion_matrix"]:
-        print(f"  {row}")
+    print("[Profile] Full evaluation generate latency")
+    print(f"  Mean batch latency:  {safe_format(perf['forward_batch_latency_ms']['mean_ms'])} ms")
     print(
-        "  real -> "
-        f"P: {safe_format(binary['per_class']['real']['precision'])}  "
-        f"R: {safe_format(binary['per_class']['real']['recall'])}  "
-        f"F1: {safe_format(binary['per_class']['real']['f1'])}  "
-        f"support: {binary['per_class']['real']['support']}"
+        "  P50 / P90 / P95:     "
+        f"{safe_format(perf['forward_batch_latency_ms']['p50_ms'])} / "
+        f"{safe_format(perf['forward_batch_latency_ms']['p90_ms'])} / "
+        f"{safe_format(perf['forward_batch_latency_ms']['p95_ms'])} ms"
     )
+    print(f"  Mean/sample latency: {safe_format(perf['forward_sample_latency_mean_ms'])} ms")
+    print(f"  Samples / second:    {safe_format(perf['eval_samples_per_sec'])}")
+    print("")
+
+    print("[Profile] Full evaluation end-to-end batch latency")
+    print(f"  Mean batch latency:  {safe_format(perf['e2e_batch_latency_ms']['mean_ms'])} ms")
     print(
-        "  fake -> "
-        f"P: {safe_format(binary['per_class']['fake']['precision'])}  "
-        f"R: {safe_format(binary['per_class']['fake']['recall'])}  "
-        f"F1: {safe_format(binary['per_class']['fake']['f1'])}  "
-        f"support: {binary['per_class']['fake']['support']}"
+        "  P50 / P90 / P95:     "
+        f"{safe_format(perf['e2e_batch_latency_ms']['p50_ms'])} / "
+        f"{safe_format(perf['e2e_batch_latency_ms']['p90_ms'])} / "
+        f"{safe_format(perf['e2e_batch_latency_ms']['p95_ms'])} ms"
     )
     print("")
 
     memory = perf["cuda_memory_peak"]
-    print("=== CUDA Memory Peak ===")
-    print(f"cuda_max_memory_allocated_mb: {safe_format(memory['cuda_max_memory_allocated_mb'])}")
-    print(f"cuda_max_memory_reserved_mb: {safe_format(memory['cuda_max_memory_reserved_mb'])}")
+    print("[Profile] CUDA memory peak")
+    print(f"  Max allocated:       {safe_format(memory['cuda_max_memory_allocated_mb'])} MB")
+    print(f"  Max reserved:        {safe_format(memory['cuda_max_memory_reserved_mb'])} MB")
+
+    if report["setup"]["print_classification_metrics"]:
+        print("")
+        multiclass = perf["classification"]["multiclass"]
+        print("=== Classification: Multi-class (6-way) ===")
+        print(f"accuracy: {safe_format(multiclass['accuracy'])}")
+        print(f"macro_precision: {safe_format(multiclass['macro_precision'])}")
+        print(f"macro_recall: {safe_format(multiclass['macro_recall'])}")
+        print(f"macro_f1: {safe_format(multiclass['macro_f1'])}")
+        print(f"weighted_f1: {safe_format(multiclass['weighted_f1'])}")
+        print(f"balanced_accuracy: {safe_format(multiclass['balanced_accuracy'])}")
+        print(f"roc_auc_ovr_macro: {safe_format(multiclass['roc_auc_ovr_macro'])}")
+        print(f"roc_auc_ovo_macro: {safe_format(multiclass['roc_auc_ovo_macro'])}")
+        print("confusion_matrix:")
+        for row in multiclass["confusion_matrix"]:
+            print(f"  {row}")
+        print("per_class:")
+        for class_name, metrics in multiclass["per_class"].items():
+            print(
+                f"  {class_name:25s} -> "
+                f"P: {safe_format(metrics['precision'])}  "
+                f"R: {safe_format(metrics['recall'])}  "
+                f"F1: {safe_format(metrics['f1'])}  "
+                f"support: {metrics['support']}"
+            )
+
+        print("")
+        binary = perf["classification"]["binary_real_vs_fake"]
+        print("=== Classification: Binary (real vs fake) ===")
+        print(f"accuracy: {safe_format(binary['accuracy'])}")
+        print(f"macro_precision: {safe_format(binary['macro_precision'])}")
+        print(f"macro_recall: {safe_format(binary['macro_recall'])}")
+        print(f"macro_f1: {safe_format(binary['macro_f1'])}")
+        print(f"balanced_accuracy: {safe_format(binary['balanced_accuracy'])}")
+        print(f"roc_auc: {safe_format(binary['roc_auc'])}")
+        print(f"pr_auc: {safe_format(binary['pr_auc'])}")
+        print("confusion_matrix:")
+        for row in binary["confusion_matrix"]:
+            print(f"  {row}")
+        print(
+            "  real -> "
+            f"P: {safe_format(binary['per_class']['real']['precision'])}  "
+            f"R: {safe_format(binary['per_class']['real']['recall'])}  "
+            f"F1: {safe_format(binary['per_class']['real']['f1'])}  "
+            f"support: {binary['per_class']['real']['support']}"
+        )
+        print(
+            "  fake -> "
+            f"P: {safe_format(binary['per_class']['fake']['precision'])}  "
+            f"R: {safe_format(binary['per_class']['fake']['recall'])}  "
+            f"F1: {safe_format(binary['per_class']['fake']['f1'])}  "
+            f"support: {binary['per_class']['fake']['support']}"
+        )
 
 
 def main() -> None:
@@ -720,8 +914,14 @@ def main() -> None:
             "use_cn_clip": args.use_cn_clip,
             "clip_model": args.clip_model,
             "bert": args.bert,
+            "print_classification_metrics": args.print_classification_metrics,
         },
         "parameters": count_parameters(model),
+        "compute_cost": profile_compute_cost(
+            model=model,
+            sample_batch=first_batch,
+            backend=args.flops_backend,
+        ),
         "single_sample_forward_latency_ms": benchmark_single_sample_latency(
             model=model,
             single_batch=first_batch,
