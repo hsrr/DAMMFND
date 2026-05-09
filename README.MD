@@ -108,6 +108,32 @@ To train the DAMMFND model:
 
 You can switch between datasets (e.g., the default one using `data/` or the Weibo_21 dataset using `Weibo_21/`) by modifying the relevant dataset path configurations within the `main.py` script or potentially through command-line arguments if implemented. Please inspect `main.py` for details on dataset selection and other hyperparameters.
 
+## Checkpoint Evaluation and Inference Profiling
+
+For the custom 6-class JSONL dataset, you can evaluate a saved `parameter_dammfnd.pkl`
+checkpoint and profile inference performance with:
+
+```bash
+cd src
+python3 profile_dammfnd_inference.py \
+  --checkpoint /path/to/parameter_dammfnd.pkl \
+  --data-dir /map-vepfs/liniuniu/hesirui/datasets \
+  --test-image-root /map-vepfs/liniuniu/hesirui/datasets/AMG_MEDIA/test_imagesN \
+  --bert /map-vepfs/liniuniu/hesirui/bert-base-uncased \
+  --clip-model /map-vepfs/liniuniu/hesirui/clip-vit-base-patch16 \
+  --batch-size 32 \
+  --output-json ./dammfnd_profile_report.json
+```
+
+The report includes:
+
+- 6-class metrics: accuracy, macro/weighted precision, recall, F1, balanced accuracy,
+  OVR/OVO ROC-AUC (when available), per-class metrics, and confusion matrix
+- Binary real-vs-fake metrics collapsed from the 6-class outputs: accuracy, precision,
+  recall, F1, balanced accuracy, ROC-AUC, PR-AUC, and confusion matrix
+- Inference performance: single-sample latency, batch latency, evaluation throughput,
+  peak CUDA memory, and parameter counts
+
 ## Acknowledgements
 
 This codebase is developed based on the implementation of [MMDFND](https://github.com/yutchina/MMDFND/tree/main). We sincerely thank the original authors for sharing their code and groundwork.
